@@ -5,7 +5,7 @@
 const API_BASE = 'https://api.unityedge.io/rest/v1/rpc/';
 const API_KEY = 'sb_publishable_yKqi0fu5vV6G4ryUIMJuzw_NCoFEl1c';
 const ALARM_NAME = 'unity-auto-sync';
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const TRACKER_URL = 'https://nam-qyn8.onrender.com/';
 const TRACKER_MATCH = 'https://nam-qyn8.onrender.com/*';
 
@@ -459,11 +459,24 @@ async function performSync({ triggeredBy = 'manual', accountId = null } = {}) {
   }
 
   const okPayloads = results.filter(r => r.ok).map(r => r.payload);
-  const totalToday = okPayloads.reduce((sum, p) => sum + (p.total_usd || 0), 0);
-  const totalLifetime = okPayloads.reduce((sum, p) => sum + (p.lifetime_usd || 0), 0);
-  const totalBalance = okPayloads.reduce((sum, p) => sum + (p.balance_usd || 0), 0);
   const okCount = okPayloads.length;
   const errCount = results.length - okCount;
+  const freshIds = new Set(okPayloads.map(p => p.account_id));
+
+  // For the COMBINED summary we want totals across EVERY enabled account using
+  // each account's latest known reading \u2014 fresh from this run when available,
+  // otherwise the cached lastFullPayload from a previous successful sync.
+  // Without this, a sync where only some accounts have valid tokens would
+  // under-report lifetime/balance because expired-token accounts get dropped.
+  const refreshed = await getSettings();
+  const allEnabled = (refreshed.accounts || []).map(sanitizeAccount).filter(a => a.enabled !== false);
+  const latestPerAccount = allEnabled
+    .map(a => a.lastFullPayload)
+    .filter(Boolean);
+
+  const totalToday = latestPerAccount.reduce((sum, p) => sum + (p.total_usd || 0), 0);
+  const totalLifetime = latestPerAccount.reduce((sum, p) => sum + (p.lifetime_usd || 0), 0);
+  const totalBalance = latestPerAccount.reduce((sum, p) => sum + (p.balance_usd || 0), 0);
 
   const multiPayload = {
     source: 'chrome-extension',
@@ -471,13 +484,14 @@ async function performSync({ triggeredBy = 'manual', accountId = null } = {}) {
     multi: true,
     synced_at: new Date().toISOString(),
     triggered_by: triggeredBy,
-    account_count: results.length,
+    account_count: allEnabled.length,
     ok_count: okCount,
     error_count: errCount,
+    fresh_account_ids: [...freshIds],         // accounts whose data was refreshed this run
     total_usd: Number(totalToday.toFixed(6)),
     lifetime_usd: Number(totalLifetime.toFixed(6)),
     balance_usd: Number(totalBalance.toFixed(6)),
-    accounts: okPayloads,
+    accounts: latestPerAccount,                // latest known per-account snapshots (fresh + cached)
     errors: results.filter(r => !r.ok).map(r => ({ account_id: r.accountId, error: r.error }))
   };
 
@@ -489,7 +503,7 @@ async function performSync({ triggeredBy = 'manual', accountId = null } = {}) {
       ? null
       : results.filter(r => !r.ok).map(r => r.error).join(' · '),
     lastMultiPayload: multiPayload,
-    lastFullPayload: okPayloads[0] || null,    // backwards-compat for single-account tracker listeners
+    lastFullPayload: okPayloads[0] || latestPerAccount[0] || null,    // backwards-compat for single-account tracker listeners
     lastSummary: {
       total_usd: multiPayload.total_usd,
       lifetime_usd: multiPayload.lifetime_usd,
@@ -497,7 +511,7 @@ async function performSync({ triggeredBy = 'manual', accountId = null } = {}) {
       account_count: multiPayload.account_count,
       ok_count: multiPayload.ok_count,
       error_count: multiPayload.error_count,
-      date: okPayloads[0]?.date || null
+      date: (okPayloads[0] || latestPerAccount[0])?.date || null
     }
   });
 

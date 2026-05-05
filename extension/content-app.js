@@ -27,10 +27,11 @@
     }
   }
 
-  // Push everything we have cached: emit one EARNINGS_PUSH per account in the
-  // multi payload (backwards compatible with single-account listeners) and one
-  // EARNINGS_PUSH_MULTI with the combined summary. If only the legacy single
-  // payload exists, fall back to that.
+  // Push everything we have cached: emit one EARNINGS_PUSH per FRESHLY-refreshed
+  // account in the multi payload (avoids re-replaying stale per-account data
+  // on every sync), and one EARNINGS_PUSH_MULTI with the full combined summary
+  // (which contains every enabled account's latest known reading — fresh + cached).
+  // If only the legacy single payload exists, fall back to that.
   async function pushLatest() {
     try {
       const stored = await chrome.storage.local.get([STORAGE_KEY_MULTI, STORAGE_KEY_SINGLE]);
@@ -38,7 +39,12 @@
       const single = stored && stored[STORAGE_KEY_SINGLE];
 
       if (multi && Array.isArray(multi.accounts) && multi.accounts.length > 0) {
+        const freshIds = Array.isArray(multi.fresh_account_ids) ? new Set(multi.fresh_account_ids) : null;
         for (const p of multi.accounts) {
+          // If the multi payload tagged which accounts were fresh, only emit
+          // per-account EARNINGS_PUSH for those. Older payloads without that
+          // tag fall back to emitting all (backwards compatible).
+          if (freshIds && !freshIds.has(p.account_id)) continue;
           postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH', payload: p });
         }
         postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH_MULTI', payload: multi });
@@ -68,7 +74,9 @@
       if (multiChange && multiChange.newValue) {
         const multi = multiChange.newValue;
         if (Array.isArray(multi.accounts)) {
+          const freshIds = Array.isArray(multi.fresh_account_ids) ? new Set(multi.fresh_account_ids) : null;
           for (const p of multi.accounts) {
+            if (freshIds && !freshIds.has(p.account_id)) continue;
             postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH', payload: p });
           }
         }
