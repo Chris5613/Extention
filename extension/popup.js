@@ -74,6 +74,17 @@ async function refreshStatus() {
   }
 
   $('last-sync').textContent = settings.lastSync ? timeAgo(settings.lastSync) : '';
+
+  // Next scheduled sync (when auto-sync is on)
+  const statusEl2 = $('status');
+  if (settings.autoSync && settings.nextScheduledAt && settings.lastSyncStatus !== 'error') {
+    const when = new Date(settings.nextScheduledAt);
+    const whenStr = when.toLocaleString(undefined, {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+    });
+    statusEl2.textContent = `Next: ${whenStr}`;
+    statusEl2.classList.remove('success', 'error');
+  }
 }
 
 async function doSync() {

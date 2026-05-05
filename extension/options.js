@@ -32,7 +32,17 @@ async function loadSettings() {
   $('authHeaderValue').value = settings.authHeaderValue || '';
   $('autoSync').checked = !!settings.autoSync;
   $('autoSyncMinutes').value = String(settings.autoSyncMinutes || 60);
+  $('autoSyncDailyTime').value = settings.autoSyncDailyTime || '19:20';
+  $('autoSyncTimezone').value = settings.autoSyncTimezone || 'America/Los_Angeles';
   $('manualToken').value = settings.manualToken || '';
+
+  // Mode radio
+  const mode = settings.autoSyncMode || 'daily';
+  document.querySelectorAll('input[name="autoSyncMode"]').forEach(r => {
+    r.checked = (r.value === mode);
+  });
+  applyModeUi(mode);
+  renderNextSync(settings);
 
   // Token status
   const ts = $('token-status');
@@ -48,6 +58,40 @@ async function loadSettings() {
   }
 }
 
+function applyModeUi(mode) {
+  document.querySelectorAll('.mode-tab').forEach(t => {
+    t.classList.toggle('active', t.querySelector('input').value === mode);
+  });
+  document.querySelectorAll('.mode-panel').forEach(p => {
+    p.classList.toggle('active', p.dataset.mode === mode);
+  });
+}
+
+function renderNextSync(settings) {
+  const el = $('next-sync-hint');
+  if (!settings.autoSync) {
+    el.className = 'next-sync';
+    el.textContent = 'Auto-sync is off. Enable it above and click Save Settings.';
+    return;
+  }
+  if (!settings.nextScheduledAt) {
+    el.className = 'next-sync';
+    el.textContent = 'Next sync not scheduled yet — save settings to schedule it.';
+    return;
+  }
+  const when = new Date(settings.nextScheduledAt);
+  const localStr = when.toLocaleString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+  });
+  const msUntil = when.getTime() - Date.now();
+  const hrs = Math.max(0, Math.floor(msUntil / 3600000));
+  const mins = Math.max(0, Math.floor((msUntil % 3600000) / 60000));
+  const inWords = hrs >= 1 ? `in ${hrs}h ${mins}m` : (mins >= 1 ? `in ${mins}m` : 'in <1m');
+  el.className = 'next-sync on';
+  el.textContent = `Next sync: ${localStr} (${inWords})`;
+}
+
 async function save() {
   const saveMsg = $('save-msg');
   const btn = $('save-btn');
@@ -60,7 +104,10 @@ async function save() {
     authHeaderName: $('authHeaderName').value.trim() || 'Authorization',
     authHeaderValue: $('authHeaderValue').value.trim(),
     autoSync: $('autoSync').checked,
+    autoSyncMode: document.querySelector('input[name="autoSyncMode"]:checked')?.value || 'daily',
     autoSyncMinutes: parseInt($('autoSyncMinutes').value, 10) || 60,
+    autoSyncDailyTime: $('autoSyncDailyTime').value || '19:20',
+    autoSyncTimezone: $('autoSyncTimezone').value || 'America/Los_Angeles',
     manualToken: $('manualToken').value.trim()
   };
 
@@ -108,6 +155,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('save-btn').addEventListener('click', save);
   $('test-btn').addEventListener('click', testPing);
+
+  // Mode radio switching (immediate UI update)
+  document.querySelectorAll('input[name="autoSyncMode"]').forEach(r => {
+    r.addEventListener('change', (e) => applyModeUi(e.target.value));
+  });
 
   // Auto-refresh token status when the options tab regains focus
   window.addEventListener('focus', loadSettings);

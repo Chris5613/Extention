@@ -10,14 +10,18 @@ const DEFAULT_SETTINGS = {
   authHeaderName: 'Authorization',
   authHeaderValue: '',
   autoSync: false,
-  autoSyncMinutes: 60,
+  autoSyncMode: 'daily',                    // 'interval' | 'daily'
+  autoSyncMinutes: 60,                      // used when mode === 'interval'
+  autoSyncDailyTime: '19:20',               // used when mode === 'daily' (HH:MM, 24h)
+  autoSyncTimezone: 'America/Los_Angeles',  // IANA tz; Pacific handles PST/PDT automatically
   manualToken: '',
   lastSync: null,
   lastSyncStatus: null, // 'ok' | 'error'
   lastSyncError: null,
   lastEarnings: null,    // { date, total_usd, allocation_count, device_count, email }
   tokenSource: null,     // 'auto' | 'manual' | null
-  detectedEmail: null
+  detectedEmail: null,
+  nextScheduledAt: null  // ISO timestamp of the next scheduled alarm
 };
 
 // ───────────────────────────────────────────────────────────────
@@ -81,6 +85,47 @@ async function apiCall(rpc, body, token) {
 // Build today's earnings payload
 // ───────────────────────────────────────────────────────────────
 function pad2(n) { return String(n).padStart(2, '0'); }
+
+// ───────────────────────────────────────────────────────────────
+// Timezone helpers — for "daily at HH:MM in IANA tz" scheduling
+// ───────────────────────────────────────────────────────────────
+// Offset in minutes such that: localWallClock = utcInstant + offset*60000
+function getTzOffsetMinutes(utcDate, timeZone) {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+    const parts = {};
+    fmt.formatToParts(utcDate).forEach(p => { if (p.type !== 'literal') parts[p.type] = p.value; });
+    const hr = parts.hour === '24' ? 0 : +parts.hour;
+    const asIfUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, hr, +parts.minute, +parts.second);
+    return (asIfUtc - utcDate.getTime()) / 60000;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// Returns the next UTC ms for the next occurrence of HH:MM in `timeZone`, strictly in the future.
+function nextDailyUtcMs(hh, mm, timeZone) {
+  const now = new Date();
+  const nowMs = now.getTime();
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit'
+  });
+  const parts = {};
+  fmt.formatToParts(now).forEach(p => { if (p.type !== 'literal') parts[p.type] = p.value; });
+
+  // Try today, tomorrow, day after (covers DST spring-forward edge where a time might not exist)
+  for (let dayOffset = 0; dayOffset < 3; dayOffset++) {
+    const asIfUtc = new Date(Date.UTC(+parts.year, +parts.month - 1, +parts.day + dayOffset, hh, mm, 0));
+    const tzOffset = getTzOffsetMinutes(asIfUtc, timeZone);
+    const actualUtc = asIfUtc.getTime() - tzOffset * 60000;
+    if (actualUtc > nowMs + 5000) return actualUtc;
+  }
+  return null;
+}
 
 function buildPayload(allocations, balanceMicros, email) {
   // Determine "today" — try local date first, fall back to most recent allocation date
@@ -271,11 +316,30 @@ async function testDestination() {
 async function rescheduleAlarm() {
   const s = await getSettings();
   await chrome.alarms.clear(ALARM_NAME);
-  if (s.autoSync && s.autoSyncMinutes >= 1) {
+  if (!s.autoSync) {
+    await setSettings({ nextScheduledAt: null });
+    return;
+  }
+
+  if (s.autoSyncMode === 'daily') {
+    const [hhStr, mmStr] = (s.autoSyncDailyTime || '19:20').split(':');
+    const hh = Math.max(0, Math.min(23, parseInt(hhStr, 10) || 0));
+    const mm = Math.max(0, Math.min(59, parseInt(mmStr, 10) || 0));
+    const tz = s.autoSyncTimezone || 'America/Los_Angeles';
+    const when = nextDailyUtcMs(hh, mm, tz);
+    if (when) {
+      chrome.alarms.create(ALARM_NAME, { when });
+      await setSettings({ nextScheduledAt: new Date(when).toISOString() });
+    } else {
+      await setSettings({ nextScheduledAt: null });
+    }
+  } else {
+    const mins = Math.max(1, s.autoSyncMinutes || 60);
     chrome.alarms.create(ALARM_NAME, {
       delayInMinutes: 1,
-      periodInMinutes: Math.max(1, s.autoSyncMinutes)
+      periodInMinutes: mins
     });
+    await setSettings({ nextScheduledAt: new Date(Date.now() + 60000).toISOString() });
   }
 }
 
@@ -291,6 +355,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         message: result.error?.slice(0, 200) || 'Unknown error'
       });
     } catch (e) { /* notifications may be disabled */ }
+  }
+  // Daily mode uses one-shot alarms — reschedule for next day after firing
+  const s = await getSettings();
+  if (s.autoSync && s.autoSyncMode === 'daily') {
+    await rescheduleAlarm();
   }
 });
 

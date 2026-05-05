@@ -201,6 +201,55 @@ input:focus, textarea:focus, select:focus {
   font-weight: 500;
 }
 
+/* Mode tabs (interval vs daily) */
+.mode-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.mode-tab {
+  flex: 1;
+  text-align: center;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-3);
+  transition: background 0.15s, color 0.15s;
+  user-select: none;
+}
+.mode-tab input { display: none; }
+.mode-tab:hover { color: var(--text-2); }
+.mode-tab.active {
+  background: rgba(var(--accent-rgb), 0.14);
+  color: var(--accent);
+}
+
+.mode-panel { display: none; }
+.mode-panel.active { display: block; }
+
+.next-sync {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-3);
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.next-sync.on {
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.28);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
 /* Row end */
 .row-end {
   display: flex;
