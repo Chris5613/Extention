@@ -1,62 +1,31 @@
-// Options page — multi-account configure, destination, auto-sync.
+// Options page — configure destination, auto-sync (interval or daily-at-time), and manual token.
 
 const $ = (id) => document.getElementById(id);
 
 const SAMPLE_PAYLOAD = {
   source: 'chrome-extension',
-  version: '1.2.0',
+  version: '1.1.0',
   synced_at: '2026-02-19T14:30:00.000Z',
+  email: 'you@example.com',
   date: '2026-02-19',
-  account_count: 2,
-  failed_account_count: 0,
-  grand_total_usd: 2.834000,
-  grand_lifetime_usd: 304.512000,
-  grand_balance_usd: 7.825001,
-  accounts: [
-    {
-      account_id: 'sub-uuid-1',
-      email: 'main@example.com',
-      label: 'Main',
-      date: '2026-02-19',
-      total_usd: 1.234567,
-      allocation_count: 12,
-      device_count: 3,
-      balance_usd: 4.825001,
-      lifetime_usd: 152.834012,
-      devices: [{ license_id: 'abc123', amount_usd: 0.456, allocation_count: 4 }],
-      allocations: [{ id: '...', license_id: 'abc123', amount_usd: 0.123, completed_at: '2026-02-19T12:34:56.789Z' }]
-    },
-    {
-      account_id: 'sub-uuid-2',
-      email: 'second@example.com',
-      label: 'Second',
-      date: '2026-02-19',
-      total_usd: 1.599433,
-      allocation_count: 8,
-      device_count: 2,
-      balance_usd: 3.000000,
-      lifetime_usd: 151.677988,
-      devices: [],
-      allocations: []
-    }
+  total_usd: 1.234567,
+  allocation_count: 12,
+  device_count: 3,
+  balance_usd: 4.825001,
+  lifetime_usd: 152.834012,
+  devices: [
+    { license_id: 'abc123-def456', amount_usd: 0.456000, allocation_count: 4 },
+    { license_id: 'xyz789-ghi012', amount_usd: 0.778567, allocation_count: 8 }
   ],
-  errors: [],
-  // Backward-compat flat fields (sums of all accounts)
-  email: 'main@example.com, second@example.com',
-  total_usd: 2.834000,
-  lifetime_usd: 304.512000,
-  balance_usd: 7.825001,
-  allocation_count: 20,
-  device_count: 5
+  allocations: [
+    { id: '...', license_id: 'abc123-def456', amount_usd: 0.123, completed_at: '2026-02-19T12:34:56.789Z' }
+  ]
 };
 
-// ───────────────────────────────────────────────────────────────
-// Settings load/save
-// ───────────────────────────────────────────────────────────────
 async function loadSettings() {
   const res = await chrome.runtime.sendMessage({ type: 'GET_STATUS' });
   if (!res?.ok) return;
-  const { settings, accounts, currentAutoSession } = res;
+  const { settings, hasAutoToken, hasManualToken } = res;
 
   $('destinationUrl').value = settings.destinationUrl || '';
   $('authHeaderName').value = settings.authHeaderName || 'Authorization';
@@ -65,12 +34,26 @@ async function loadSettings() {
   $('autoSyncMinutes').value = String(settings.autoSyncMinutes || 60);
   $('autoSyncDailyTime').value = settings.autoSyncDailyTime || '19:20';
   $('autoSyncTimezone').value = settings.autoSyncTimezone || 'America/Los_Angeles';
+  $('manualToken').value = settings.manualToken || '';
 
   const mode = settings.autoSyncMode || 'daily';
-  document.querySelectorAll('input[name="autoSyncMode"]').forEach(r => { r.checked = (r.value === mode); });
+  document.querySelectorAll('input[name="autoSyncMode"]').forEach(r => {
+    r.checked = (r.value === mode);
+  });
   applyModeUi(mode);
   renderNextSync(settings);
-  renderAccounts(accounts || [], currentAutoSession);
+
+  const ts = $('token-status');
+  if (hasManualToken) {
+    ts.className = 'token-status manual';
+    ts.textContent = `Using manual token override${settings.detectedEmail ? ' (' + settings.detectedEmail + ')' : ''}.`;
+  } else if (hasAutoToken) {
+    ts.className = 'token-status auto';
+    ts.textContent = `Auto-detected token from manage.unitynodes.io${settings.detectedEmail ? ' — signed in as ' + settings.detectedEmail : ''}.`;
+  } else {
+    ts.className = 'token-status missing';
+    ts.textContent = 'No token found. Open https://manage.unitynodes.io and sign in, or paste a token below.';
+  }
 }
 
 function applyModeUi(mode) {
@@ -107,144 +90,6 @@ function renderNextSync(settings) {
   el.textContent = `Next sync: ${localStr} (${inWords})`;
 }
 
-// ───────────────────────────────────────────────────────────────
-// Accounts UI
-// ───────────────────────────────────────────────────────────────
-function renderAccounts(accounts, currentSession) {
-  // Current detect banner
-  const detect = $('current-detect');
-  const haveCurrent = !!currentSession?.accessToken;
-  const accountIds = new Set(accounts.map(a => a.id));
-  const currentId = currentSession?.sub || currentSession?.email;
-  const alreadySaved = haveCurrent && accountIds.has(currentId);
-
-  if (haveCurrent && !alreadySaved) {
-    detect.className = 'current-detect has-session';
-    detect.innerHTML = `
-      <span>Detected on manage.unitynodes.io: <strong>${escapeHtml(currentSession.email || 'unknown')}</strong></span>
-      <button class="btn primary btn-sm" id="add-current-btn" type="button">+ Add this account</button>
-    `;
-    $('add-current-btn').addEventListener('click', addCurrent);
-  } else if (haveCurrent && alreadySaved) {
-    detect.className = 'current-detect has-session';
-    detect.innerHTML = `<span>✓ Currently signed in as <strong>${escapeHtml(currentSession.email || 'unknown')}</strong> — already saved below.</span>`;
-  } else {
-    detect.className = 'current-detect no-session';
-    detect.textContent = 'No active session detected. Open https://manage.unitynodes.io and sign in to auto-grab a token.';
-  }
-
-  // List
-  const list = $('acc-list');
-  list.innerHTML = '';
-  accounts.forEach(acc => list.appendChild(renderAccountRow(acc)));
-}
-
-function renderAccountRow(acc) {
-  const row = document.createElement('div');
-  row.className = 'acc-row';
-  row.dataset.id = acc.id;
-  row.dataset.disabled = acc.enabled === false ? 'true' : 'false';
-
-  const status = acc.lastError ? 'error' : (acc.lastSuccessAt ? 'ok' : 'pending');
-  row.dataset.status = status;
-
-  const expiresInS = acc.expiresAt ? acc.expiresAt - Math.floor(Date.now() / 1000) : null;
-  const expiryStr = expiresInS == null ? 'no refresh token' :
-    expiresInS < 0 ? `expired ${formatDuration(-expiresInS)} ago` : `valid ${formatDuration(expiresInS)}`;
-
-  const metaParts = [];
-  metaParts.push(expiryStr);
-  if (acc.lastSuccessAt) metaParts.push('last sync ' + timeAgo(acc.lastSuccessAt));
-
-  row.innerHTML = `
-    <div class="acc-status"></div>
-    <div class="acc-info">
-      <div class="acc-label-row">
-        <span class="acc-label-text">${escapeHtml(acc.label || 'Account')}</span>
-        <span class="acc-via" data-via="${acc.addedVia}">${acc.addedVia === 'manual' ? 'manual' : 'auto'}</span>
-      </div>
-      <div class="acc-email">${escapeHtml(acc.email || '—')}</div>
-      <div class="acc-meta">${escapeHtml(metaParts.join(' · '))}</div>
-      ${acc.lastError ? `<div class="acc-meta error-msg">⚠ ${escapeHtml(acc.lastError)}</div>` : ''}
-    </div>
-    <div class="acc-actions">
-      <button class="acc-iconbtn" data-act="rename" title="Rename">✎</button>
-      <button class="acc-iconbtn" data-act="toggle" title="${acc.enabled === false ? 'Enable' : 'Disable'}">${acc.enabled === false ? '◯' : '●'}</button>
-      <button class="acc-iconbtn" data-act="refresh" title="Refresh token">↻</button>
-      <button class="acc-iconbtn danger" data-act="remove" title="Remove">×</button>
-    </div>
-  `;
-  row.querySelectorAll('[data-act]').forEach(btn => {
-    btn.addEventListener('click', () => handleAccountAction(acc, btn.dataset.act));
-  });
-  return row;
-}
-
-async function handleAccountAction(acc, action) {
-  switch (action) {
-    case 'rename': {
-      const next = prompt('New label for this account:', acc.label || '');
-      if (next != null && next.trim()) {
-        await chrome.runtime.sendMessage({ type: 'UPDATE_ACCOUNT', id: acc.id, patch: { label: next.trim() } });
-        await loadSettings();
-      }
-      break;
-    }
-    case 'toggle': {
-      await chrome.runtime.sendMessage({ type: 'UPDATE_ACCOUNT', id: acc.id, patch: { enabled: !(acc.enabled !== false) } });
-      await loadSettings();
-      break;
-    }
-    case 'refresh': {
-      const res = await chrome.runtime.sendMessage({ type: 'REFRESH_ACCOUNT', id: acc.id });
-      if (!res?.ok) alert('Refresh failed: ' + (res?.error || 'unknown'));
-      await loadSettings();
-      break;
-    }
-    case 'remove': {
-      if (confirm(`Remove "${acc.label || acc.email}" from synced accounts?`)) {
-        await chrome.runtime.sendMessage({ type: 'REMOVE_ACCOUNT', id: acc.id });
-        await loadSettings();
-      }
-      break;
-    }
-  }
-}
-
-async function addCurrent() {
-  const res = await chrome.runtime.sendMessage({ type: 'ADD_CURRENT_ACCOUNT' });
-  if (!res?.ok) alert('Could not add: ' + (res?.error || 'unknown'));
-  await loadSettings();
-}
-
-async function addByToken() {
-  const status = $('add-status');
-  status.className = 'test-status';
-  status.textContent = 'Saving…';
-  const res = await chrome.runtime.sendMessage({
-    type: 'ADD_ACCOUNT_FROM_TOKEN',
-    input: $('add-token').value,
-    label: $('add-label').value
-  });
-  if (!res?.ok) {
-    status.className = 'test-status err';
-    status.textContent = '✕ ' + (res?.error || 'failed');
-    return;
-  }
-  status.className = 'test-status ok';
-  status.textContent = `✓ Added ${res.email || 'account'}`;
-  $('add-token').value = '';
-  $('add-label').value = '';
-  setTimeout(() => {
-    $('add-panel').hidden = true;
-    status.textContent = '';
-  }, 1200);
-  await loadSettings();
-}
-
-// ───────────────────────────────────────────────────────────────
-// Save / test ping
-// ───────────────────────────────────────────────────────────────
 async function save() {
   const saveMsg = $('save-msg');
   const btn = $('save-btn');
@@ -260,7 +105,8 @@ async function save() {
     autoSyncMode: document.querySelector('input[name="autoSyncMode"]:checked')?.value || 'daily',
     autoSyncMinutes: parseInt($('autoSyncMinutes').value, 10) || 60,
     autoSyncDailyTime: $('autoSyncDailyTime').value || '19:20',
-    autoSyncTimezone: $('autoSyncTimezone').value || 'America/Los_Angeles'
+    autoSyncTimezone: $('autoSyncTimezone').value || 'America/Los_Angeles',
+    manualToken: $('manualToken').value.trim()
   };
 
   await chrome.storage.local.set(patch);
@@ -276,16 +122,20 @@ async function save() {
 async function testPing() {
   const btn = $('test-btn');
   const status = $('test-status');
+
   await chrome.storage.local.set({
     destinationUrl: $('destinationUrl').value.trim(),
     authHeaderName: $('authHeaderName').value.trim() || 'Authorization',
     authHeaderValue: $('authHeaderValue').value.trim()
   });
+
   btn.disabled = true;
   status.className = 'test-status';
   status.textContent = 'Sending…';
+
   const res = await chrome.runtime.sendMessage({ type: 'TEST_DESTINATION' });
   btn.disabled = false;
+
   if (res?.ok) {
     status.className = 'test-status ok';
     status.textContent = `✓ Received ${res.result?.status || 200}`;
@@ -295,130 +145,16 @@ async function testPing() {
   }
 }
 
-// ───────────────────────────────────────────────────────────────
-// Helpers
-// ───────────────────────────────────────────────────────────────
-function escapeHtml(str) {
-  return String(str ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[c]));
-}
-
-function formatDuration(s) {
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h`;
-  return `${Math.floor(h / 24)}d`;
-}
-
-function timeAgo(iso) {
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 0) return 'just now';
-  return formatDuration(Math.floor(ms / 1000)) + ' ago';
-}
-
-// ───────────────────────────────────────────────────────────────
-// Diagnostics
-// ───────────────────────────────────────────────────────────────
-async function loadDiagnostics() {
-  const grid = $('diag-grid');
-  const logEl = $('diag-log');
-  const res = await chrome.runtime.sendMessage({ type: 'GET_DIAGNOSTICS' });
-  if (!res?.ok) {
-    grid.textContent = 'Could not load diagnostics.';
-    return;
-  }
-
-  const rows = [];
-  const fmt = (iso) => iso ? new Date(iso).toLocaleString() : '—';
-  const ago = (iso) => iso ? timeAgo(iso) : '—';
-
-  rows.push(['Auto-sync', res.autoSync ? 'ON' : 'OFF', res.autoSync ? 'ok' : 'warn']);
-  rows.push(['Mode', `${res.autoSyncMode}${res.autoSyncMode === 'daily' ? ` @ ${res.autoSyncDailyTime} ${res.autoSyncTimezone}` : ` every ${res.autoSyncMinutes || '?'}m`}`, '']);
-  rows.push(['Accounts (enabled)', String(res.accountCount), res.accountCount > 0 ? 'ok' : 'err']);
-  rows.push(['Alarm in Chrome', res.alarmExists ? 'YES' : 'NO (will be re-armed on next SW wake)', res.alarmExists ? 'ok' : 'warn']);
-  if (res.alarmExists) {
-    rows.push(['Alarm fires at', fmt(res.alarmScheduledTime), '']);
-    if (res.alarmPeriodInMinutes) rows.push(['Repeats every', `${res.alarmPeriodInMinutes}m`, '']);
-  }
-  rows.push(['Stored next sync', fmt(res.nextScheduledAt), '']);
-  rows.push(['Last sync', `${fmt(res.lastSync)} (${ago(res.lastSync)})`, res.lastSyncStatus === 'ok' ? 'ok' : (res.lastSyncStatus === 'error' ? 'err' : '')]);
-  rows.push(['Last status', res.lastSyncStatus || 'never run', res.lastSyncStatus === 'ok' ? 'ok' : (res.lastSyncStatus === 'error' ? 'err' : '')]);
-  if (res.lastSyncError) rows.push(['Last error', res.lastSyncError, 'err']);
-
-  grid.innerHTML = rows.map(([k, v, cls]) => `
-    <div class="diag-key">${escapeHtml(k)}</div>
-    <div class="diag-val ${cls || ''}">${escapeHtml(v)}</div>
-  `).join('');
-
-  if (Array.isArray(res.syncLog) && res.syncLog.length > 0) {
-    logEl.textContent = res.syncLog
-      .slice()
-      .reverse()
-      .map(e => {
-        const t = new Date(e.at).toLocaleString();
-        const flag = e.ok ? '✓' : '✕';
-        const tail = e.ok
-          ? `okCount=${e.okCount ?? '?'} fail=${e.failCount ?? 0} total=$${(e.grand_total_usd ?? 0).toFixed(3)}${e.note ? ' · ' + e.note : ''}`
-          : (e.error || 'unknown error');
-        return `${flag} ${t}  [${e.triggeredBy}]  ${tail}`;
-      })
-      .join('\n');
-  } else {
-    logEl.textContent = '(empty — auto-sync has not run yet)';
-  }
-}
-
-async function rearmAlarm() {
-  await chrome.runtime.sendMessage({ type: 'RESCHEDULE_ALARM' });
-  await loadDiagnostics();
-  const msg = $('save-msg');
-  msg.className = 'save-msg saved';
-  msg.textContent = 'Alarm re-armed ✓';
-  setTimeout(() => { msg.textContent = ''; msg.className = 'save-msg'; }, 2500);
-}
-
-async function syncNowFromOptions() {
-  const btn = $('diag-syncnow-btn');
-  btn.disabled = true;
-  const orig = btn.textContent;
-  btn.textContent = 'Syncing…';
-  await chrome.runtime.sendMessage({ type: 'SYNC_NOW', triggeredBy: 'options' });
-  btn.disabled = false;
-  btn.textContent = orig;
-  await loadDiagnostics();
-}
-
-// ───────────────────────────────────────────────────────────────
-// Init
-// ───────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   $('sample-payload').textContent = JSON.stringify(SAMPLE_PAYLOAD, null, 2);
   loadSettings();
-  loadDiagnostics();
 
   $('save-btn').addEventListener('click', save);
   $('test-btn').addEventListener('click', testPing);
-  $('diag-refresh-btn').addEventListener('click', loadDiagnostics);
-  $('diag-rearm-btn').addEventListener('click', rearmAlarm);
-  $('diag-syncnow-btn').addEventListener('click', syncNowFromOptions);
 
   document.querySelectorAll('input[name="autoSyncMode"]').forEach(r => {
     r.addEventListener('change', (e) => applyModeUi(e.target.value));
   });
 
-  // Add-by-token panel
-  $('add-toggle').addEventListener('click', () => {
-    const panel = $('add-panel');
-    panel.hidden = !panel.hidden;
-  });
-  $('add-cancel').addEventListener('click', () => {
-    $('add-panel').hidden = true;
-    $('add-status').textContent = '';
-  });
-  $('add-save').addEventListener('click', addByToken);
-
-  window.addEventListener('focus', () => { loadSettings(); loadDiagnostics(); });
+  window.addEventListener('focus', loadSettings);
 });

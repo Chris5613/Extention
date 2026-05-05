@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Unity Nodes Earnings Tracker",
-  "version": "1.2.1",
-  "description": "Fetches your Unity Nodes daily earnings from one or more accounts and forwards them to your Net Worth tracker via in-page messaging.",
+  "version": "1.1.0",
+  "description": "Fetches your Unity Nodes daily earnings and forwards them to your Net Worth tracker via in-page messaging (no server hop).",
   "permissions": ["storage", "alarms", "notifications", "tabs"],
   "host_permissions": [
     "https://manage.unitynodes.io/*",

@@ -1,11 +1,10 @@
 // Content script — runs on manage.unitynodes.io
-// Reads the FULL Supabase session (access_token + refresh_token + expires_at)
-// from localStorage and forwards it to the background worker.
+// Reads the Supabase auth token from localStorage and forwards it to the background worker.
 
 (function () {
   'use strict';
 
-  function findAuthSession() {
+  function findAuthToken() {
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
@@ -14,13 +13,7 @@
           if (!val) continue;
           try {
             const parsed = JSON.parse(val);
-            if (parsed?.access_token) {
-              return {
-                accessToken: parsed.access_token,
-                refreshToken: parsed.refresh_token || null,
-                expiresAt: parsed.expires_at || null
-              };
-            }
+            if (parsed?.access_token) return parsed.access_token;
           } catch (e) { /* not JSON */ }
         }
       }
@@ -28,28 +21,21 @@
     return null;
   }
 
-  let lastSentAccessToken = null;
+  let lastSentToken = null;
 
-  function sendIfChanged() {
-    const session = findAuthSession();
-    const tok = session?.accessToken || null;
-    if (tok === lastSentAccessToken) return;
-    lastSentAccessToken = tok;
+  function sendTokenIfChanged() {
+    const token = findAuthToken();
+    if (token === lastSentToken) return;
+    lastSentToken = token;
     try {
-      chrome.runtime.sendMessage(
-        { type: 'TOKEN_UPDATE', session, token: tok /* legacy back-compat */ },
-        () => { if (chrome.runtime.lastError) { /* silent */ } }
-      );
+      chrome.runtime.sendMessage({ type: 'TOKEN_UPDATE', token }, () => {
+        if (chrome.runtime.lastError) { /* silent */ }
+      });
     } catch (e) { /* extension context invalidated on reload */ }
   }
 
-  // Initial send (slight delay to let the app populate localStorage)
-  setTimeout(sendIfChanged, 500);
-  setTimeout(sendIfChanged, 2000);
-
-  // Re-check periodically — token may refresh
-  setInterval(sendIfChanged, 30000);
-
-  // Also re-check when the tab regains focus
-  window.addEventListener('focus', sendIfChanged);
+  setTimeout(sendTokenIfChanged, 500);
+  setTimeout(sendTokenIfChanged, 2000);
+  setInterval(sendTokenIfChanged, 30000);
+  window.addEventListener('focus', sendTokenIfChanged);
 })();
