@@ -671,6 +671,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const accounts = await getAccounts();
           const id = accountIdFor(decoded, session.accessToken);
           const existing = accounts.find(a => a.id === id);
+          const wasEmpty = accounts.length === 0;
+          let autoAdded = false;
           if (existing) {
             await updateAccount(id, {
               accessToken: session.accessToken,
@@ -678,7 +680,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               expiresAt: session.expiresAt || decoded.exp || existing.expiresAt,
               email: decoded.email || existing.email
             });
-          } else if (accounts.length === 0) {
+          } else if (wasEmpty) {
             // First account: auto-add for friction-free single-account flow
             await upsertAccount({
               id, email: decoded.email,
@@ -688,8 +690,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               expiresAt: session.expiresAt || decoded.exp || null,
               addedVia: 'auto'
             });
+            autoAdded = true;
           }
-          sendResponse({ ok: true, email: decoded.email, autoAdded: accounts.length === 0 });
+          sendResponse({ ok: true, email: decoded.email, autoAdded });
           break;
         }
         case 'ADD_CURRENT_ACCOUNT': {
