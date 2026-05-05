@@ -1,13 +1,14 @@
 // content-app.js
 // Runs on the Net Worth tracker page (https://nam-qyn8.onrender.com/*).
 // Bridges chrome.storage.local <-> the page via window.postMessage so the
-// extension can deliver Unity Nodes earnings directly to the React app
-// without going through any server.
+// extension can deliver Unity Nodes earnings (multi-account aware) directly
+// to the React app without going through any server.
 //
 // Protocol (origin must match window.location.origin on both sides):
 //
 //   ext  → app:  { source: "unity-nodes-tracker-ext", type: "READY" }
 //   ext  → app:  { source: "unity-nodes-tracker-ext", type: "EARNINGS_PUSH", payload: {...} }
+//   ext  → app:  { source: "unity-nodes-tracker-ext", type: "EARNINGS_PUSH_MULTI", payload: {accounts:[...], total_usd, lifetime_usd, ...} }
 //   app  → ext:  { source: "unity-nodes-tracker-app", type: "REQUEST_LATEST" }
 
 (function () {
@@ -15,7 +16,8 @@
 
   const EXT_SOURCE = 'unity-nodes-tracker-ext';
   const APP_SOURCE = 'unity-nodes-tracker-app';
-  const STORAGE_KEY = 'lastFullPayload';
+  const STORAGE_KEY_SINGLE = 'lastFullPayload';
+  const STORAGE_KEY_MULTI = 'lastMultiPayload';
 
   function postToPage(message) {
     try {
@@ -25,13 +27,23 @@
     }
   }
 
-  // Push the cached payload (if any) to the page.
+  // Push everything we have cached: emit one EARNINGS_PUSH per account in the
+  // multi payload (backwards compatible with single-account listeners) and one
+  // EARNINGS_PUSH_MULTI with the combined summary. If only the legacy single
+  // payload exists, fall back to that.
   async function pushLatest() {
     try {
-      const stored = await chrome.storage.local.get([STORAGE_KEY]);
-      const payload = stored && stored[STORAGE_KEY];
-      if (payload) {
-        postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH', payload });
+      const stored = await chrome.storage.local.get([STORAGE_KEY_MULTI, STORAGE_KEY_SINGLE]);
+      const multi = stored && stored[STORAGE_KEY_MULTI];
+      const single = stored && stored[STORAGE_KEY_SINGLE];
+
+      if (multi && Array.isArray(multi.accounts) && multi.accounts.length > 0) {
+        for (const p of multi.accounts) {
+          postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH', payload: p });
+        }
+        postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH_MULTI', payload: multi });
+      } else if (single) {
+        postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH', payload: single });
       }
     } catch (err) {
       // Extension context may be invalidated on reload — silent.
@@ -46,16 +58,28 @@
   // *after* the extension's most recent sync completed).
   pushLatest();
 
-  // Live-push when background.js completes a fresh sync.
+  // Live-push when background.js completes a fresh sync. We watch the multi key
+  // because background.js always writes both keys atomically — preferring multi
+  // avoids double-emitting on the same sync.
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
-      if (changes[STORAGE_KEY]?.newValue) {
-        postToPage({
-          source: EXT_SOURCE,
-          type: 'EARNINGS_PUSH',
-          payload: changes[STORAGE_KEY].newValue,
-        });
+      const multiChange = changes[STORAGE_KEY_MULTI];
+      if (multiChange && multiChange.newValue) {
+        const multi = multiChange.newValue;
+        if (Array.isArray(multi.accounts)) {
+          for (const p of multi.accounts) {
+            postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH', payload: p });
+          }
+        }
+        postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH_MULTI', payload: multi });
+        return;
+      }
+      // Fallback: legacy storage path — should rarely fire in v1.2+ since both keys
+      // are always written together, but kept for defensive backwards compatibility.
+      const singleChange = changes[STORAGE_KEY_SINGLE];
+      if (singleChange && singleChange.newValue) {
+        postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH', payload: singleChange.newValue });
       }
     });
   } catch (err) {

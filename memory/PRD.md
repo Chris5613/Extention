@@ -43,11 +43,21 @@ Packaged zip at `/app/unity-nodes-earnings-tracker.zip` for easy distribution.
 - Error handling: failed syncs surface in popup status + Chrome notification for background failures
 - README with install guide, payload schema, sample Node/Express receiver
 
+## v1.2.0 — Multi-account (added 2026-07)
+- New `accounts: [{id, label, email, autoToken, manualToken, enabled, lastSync, lastSyncStatus, lastSyncError, lastEarnings, lastFullPayload}]` storage model
+- Legacy single-account state migrated automatically into one account on first launch
+- Auto-detection upserts by decoded JWT `email` — signing into another Unity account adds a new row instead of overwriting
+- New message types: `ADD_MANUAL_ACCOUNT`, `UPDATE_ACCOUNT`, `REMOVE_ACCOUNT`; `SYNC_NOW` accepts optional `accountId` for per-account sync
+- `performSync` iterates all enabled accounts, sets `lastMultiPayload` (combined) and `lastFullPayload` (first-ok, for backwards-compat)
+- Tracker bridge (`content-app.js`) emits one `EARNINGS_PUSH` per account + a new `EARNINGS_PUSH_MULTI` message
+- Optional HTTP destination: one POST per account + one combined `multi:true` POST
+- Popup: combined hero totals + scrollable account list with per-row today/lifetime + per-row sync icon + "Sync All" button
+- Options: "Accounts" card with rename / enable-toggle / manual-token override / remove + "Add account manually" form
+
 ## Prioritized Backlog (not implemented)
 - **P1**: History of recent syncs (last 10) viewable in popup
 - **P1**: Retry-with-backoff on destination POST failures
 - **P2**: Optional webhook signing (HMAC-SHA256) for destination requests
-- **P2**: Multi-account support (sync multiple Unity accounts if the user has them)
 - **P2**: Configurable payload template (let user pick which fields to send)
 
 ## Next Tasks

@@ -12,15 +12,49 @@
         <div class="mark">U</div>
         <div>
           <h1>Unity Nodes Earnings Tracker</h1>
-          <p class="sub">Settings &amp; destination configuration</p>
+          <p class="sub">Multi-account settings &amp; destination configuration</p>
         </div>
       </div>
-      <span class="version">v1.1.0</span>
+      <span class="version">v1.2.0</span>
     </header>
 
     <section class="card">
+      <h2>Accounts</h2>
+      <p class="hint">
+        Each Unity Nodes account you sign in to on <code>manage.unitynodes.io</code> is captured automatically.
+        You can also paste a token manually, rename, disable, or remove any account below.
+        When you click <strong>Sync All</strong>, every <em>enabled</em> account is fetched and pushed to your tracker.
+      </p>
+
+      <div class="accounts-list" id="accounts-list"></div>
+
+      <div class="empty-accounts" id="empty-accounts" hidden>
+        No accounts yet. Open <code>manage.unitynodes.io</code> and sign in to capture your first account, or add one manually below.
+      </div>
+
+      <details class="add-account" id="add-account">
+        <summary class="add-account-summary">+ Add account manually</summary>
+        <div class="add-account-body">
+          <p class="hint">Paste an existing Bearer access_token. The account will be added (and labelled by its email if we can decode one). The Unity site uses email-OTP login, so for full auto-detect just sign in there once.</p>
+          <label class="fld">
+            <span class="label">Label <em>(optional)</em></span>
+            <input id="new-account-label" type="text" placeholder="e.g. Personal, Work, Spouse’s account…" autocomplete="off" />
+          </label>
+          <label class="fld">
+            <span class="label">Bearer access_token</span>
+            <textarea id="new-account-token" rows="3" placeholder="eyJhbGciOi…" autocomplete="off"></textarea>
+          </label>
+          <div class="row-end">
+            <button class="btn primary" id="add-account-btn">Add account</button>
+            <span class="test-status" id="add-account-status"></span>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section class="card">
       <h2>Destination</h2>
-      <p class="hint">Optional: also POST your earnings to an HTTP endpoint. The in-page bridge to your tracker site runs regardless. Leave blank to use the bridge only.</p>
+      <p class="hint">Optional: also POST your earnings to an HTTP endpoint. The in-page bridge to your tracker site runs regardless. Multi-account syncs send one POST per account <strong>and</strong> one combined POST with a <code>multi: true</code> summary.</p>
 
       <label class="fld">
         <span class="label">Destination URL</span>
@@ -46,12 +80,12 @@
 
     <section class="card">
       <h2>Auto-sync</h2>
-      <p class="hint">Run in the background and push earnings to your destination automatically.</p>
+      <p class="hint">Run in the background and push earnings for every enabled account automatically.</p>
 
       <label class="toggle">
         <input type="checkbox" id="autoSync" />
         <span class="slider"></span>
-        <span class="toggle-label">Enable auto-sync</span>
+        <span class="toggle-label">Enable auto-sync (all enabled accounts)</span>
       </label>
 
       <div class="mode-tabs">
@@ -111,24 +145,11 @@
     </section>
 
     <section class="card">
-      <h2>Auth token</h2>
-      <p class="hint">
-        By default the extension auto-grabs your token from <code>manage.unitynodes.io</code> while you're signed in.
-        You can paste a token below to override (useful if you don't want to stay logged in).
-      </p>
-
-      <div class="token-status" id="token-status">Checking…</div>
-
-      <label class="fld">
-        <span class="label">Manual token override <em>(optional)</em></span>
-        <textarea id="manualToken" rows="3" placeholder="Paste a Bearer access_token here to override auto-detection" autocomplete="off"></textarea>
-      </label>
-    </section>
-
-    <section class="card">
       <h2>Payload format</h2>
-      <p class="hint">Your destination will receive a POST with this JSON structure:</p>
+      <p class="hint">Per-account payload posted to your destination (also relayed to your tracker via the in-page bridge):</p>
       <pre class="code" id="sample-payload"></pre>
+      <p class="hint" style="margin-top:14px;">Combined multi-account summary (one extra POST per sync, plus an <code>EARNINGS_PUSH_MULTI</code> message to your tracker):</p>
+      <pre class="code" id="sample-multi-payload"></pre>
     </section>
 
     <div class="save-bar">

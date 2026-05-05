@@ -1,11 +1,11 @@
-// Background service worker — single-account Unity Nodes earnings sync.
-// Fetches earnings from api.unityedge.io and pushes them to the in-page bridge
-// (and optionally a configurable HTTP destination).
+// Background service worker — multi-account Unity Nodes earnings sync.
+// Fetches earnings for every configured account from api.unityedge.io and pushes
+// them to the in-page bridge (and optionally a configurable HTTP destination).
 
 const API_BASE = 'https://api.unityedge.io/rest/v1/rpc/';
 const API_KEY = 'sb_publishable_yKqi0fu5vV6G4ryUIMJuzw_NCoFEl1c';
 const ALARM_NAME = 'unity-auto-sync';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const TRACKER_URL = 'https://nam-qyn8.onrender.com/';
 const TRACKER_MATCH = 'https://nam-qyn8.onrender.com/*';
 
@@ -18,20 +18,41 @@ const DEFAULT_SETTINGS = {
   autoSyncMinutes: 60,                      // used when mode === 'interval'
   autoSyncDailyTime: '19:20',               // used when mode === 'daily'
   autoSyncTimezone: 'America/Los_Angeles',  // IANA tz; Pacific handles PST/PDT automatically
-  manualToken: '',
+  accounts: [],                             // list of account objects (see ACCOUNT shape below)
   lastSync: null,
-  lastSyncStatus: null, // 'ok' | 'error'
+  lastSyncStatus: null,                     // 'ok' | 'partial' | 'error'
   lastSyncError: null,
-  lastEarnings: null,    // { date, total_usd, allocation_count, device_count, email }
-  lastFullPayload: null, // full payload — content-app.js reads this and forwards to the page
-  tokenSource: null,     // 'auto' | 'manual' | null
-  detectedEmail: null,
+  lastSummary: null,                        // { total_usd, lifetime_usd, balance_usd, account_count, ok_count, error_count, date }
+  lastFullPayload: null,                    // backwards-compat: first ok account's payload (single-account tracker listeners still work)
+  lastMultiPayload: null,                   // combined payload for multi-aware listeners
   nextScheduledAt: null
 };
+
+// ACCOUNT shape:
+// {
+//   id: 'uuid',
+//   label: 'Display name (defaults to email)',
+//   email: 'foo@bar.com' | null,
+//   autoToken: '...' | '',                  // captured from manage.unitynodes.io localStorage
+//   manualToken: '...' | '',                // user-pasted override (takes precedence)
+//   enabled: true,
+//   lastSync: ISO | null,
+//   lastSyncStatus: 'ok' | 'error' | null,
+//   lastSyncError: string | null,
+//   lastEarnings: { date, total_usd, lifetime_usd, balance_usd, allocation_count, device_count, email } | null,
+//   lastFullPayload: payload | null         // most recent successful payload for this account
+// }
 
 // ───────────────────────────────────────────────────────────────
 // Helpers
 // ───────────────────────────────────────────────────────────────
+function uuid() {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  } catch (e) { /* fall through */ }
+  return 'a-' + Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
+}
+
 async function getSettings() {
   const stored = await chrome.storage.local.get(Object.keys(DEFAULT_SETTINGS));
   return { ...DEFAULT_SETTINGS, ...stored };
@@ -50,17 +71,113 @@ function decodeJwtEmail(jwt) {
   }
 }
 
-// Get the token to use — manual override if set, else auto-detected.
-async function resolveToken() {
-  const s = await getSettings();
-  if (s.manualToken && s.manualToken.trim()) {
-    return { token: s.manualToken.trim(), source: 'manual' };
-  }
-  const auto = await chrome.storage.local.get(['autoToken']);
-  if (auto.autoToken) {
-    return { token: auto.autoToken, source: 'auto' };
-  }
+function sanitizeAccount(a) {
+  return {
+    id: a.id || uuid(),
+    label: (a.label || '').trim() || a.email || 'Unity Account',
+    email: a.email || null,
+    autoToken: a.autoToken || '',
+    manualToken: a.manualToken || '',
+    enabled: a.enabled !== false,
+    lastSync: a.lastSync || null,
+    lastSyncStatus: a.lastSyncStatus || null,
+    lastSyncError: a.lastSyncError || null,
+    lastEarnings: a.lastEarnings || null,
+    lastFullPayload: a.lastFullPayload || null
+  };
+}
+
+function getAccountToken(acc) {
+  if (acc.manualToken && acc.manualToken.trim()) return { token: acc.manualToken.trim(), source: 'manual' };
+  if (acc.autoToken && acc.autoToken.trim()) return { token: acc.autoToken.trim(), source: 'auto' };
   return { token: null, source: null };
+}
+
+// ───────────────────────────────────────────────────────────────
+// Legacy migration — convert old single-account storage to accounts[]
+// ───────────────────────────────────────────────────────────────
+async function migrateLegacyIfNeeded() {
+  const stored = await chrome.storage.local.get([
+    'accounts', 'autoToken', 'manualToken', 'detectedEmail', 'tokenSource', 'lastEarnings', 'lastFullPayload'
+  ]);
+  if (Array.isArray(stored.accounts) && stored.accounts.length > 0) return;
+
+  const accounts = [];
+  const autoTok = stored.autoToken || '';
+  const manualTok = stored.manualToken || '';
+  const email = stored.detectedEmail
+    || (manualTok && decodeJwtEmail(manualTok))
+    || (autoTok && decodeJwtEmail(autoTok))
+    || null;
+
+  if (autoTok || manualTok) {
+    accounts.push(sanitizeAccount({
+      id: uuid(),
+      label: email || 'Account 1',
+      email,
+      autoToken: autoTok,
+      manualToken: manualTok,
+      enabled: true,
+      lastEarnings: stored.lastEarnings || null,
+      lastFullPayload: stored.lastFullPayload || null
+    }));
+  }
+  await setSettings({ accounts });
+}
+
+// ───────────────────────────────────────────────────────────────
+// Auto-token upsert (called from TOKEN_UPDATE)
+// ───────────────────────────────────────────────────────────────
+async function upsertAutoAccount(token) {
+  await migrateLegacyIfNeeded();
+  const email = decodeJwtEmail(token);
+  const s = await getSettings();
+  const accounts = (s.accounts || []).map(sanitizeAccount);
+
+  // Match by email when we have one, otherwise by an existing auto-only account.
+  let idx = -1;
+  if (email) {
+    idx = accounts.findIndex(a => a.email && a.email === email);
+  }
+  if (idx === -1 && !email) {
+    // No email decoded — upsert into the first account that's auto-only and has no email.
+    idx = accounts.findIndex(a => !a.email && !a.manualToken);
+  }
+
+  if (idx >= 0) {
+    accounts[idx] = sanitizeAccount({
+      ...accounts[idx],
+      autoToken: token,
+      email: email || accounts[idx].email,
+      // If the label was the legacy default, refresh it to the email
+      label: (accounts[idx].label === accounts[idx].email || !accounts[idx].label || accounts[idx].label === 'Unity Account' || accounts[idx].label === 'Account 1')
+        ? (email || accounts[idx].label)
+        : accounts[idx].label
+    });
+  } else {
+    accounts.push(sanitizeAccount({
+      id: uuid(),
+      label: email || 'Unity Account',
+      email,
+      autoToken: token,
+      manualToken: '',
+      enabled: true
+    }));
+  }
+  await setSettings({ accounts });
+  return { email, count: accounts.length };
+}
+
+async function clearAutoTokenIfPresent() {
+  // Called when content script finds no token (user signed out). We DON'T remove accounts —
+  // we just clear the autoToken on auto-sourced accounts so manual-only accounts are unaffected.
+  await migrateLegacyIfNeeded();
+  const s = await getSettings();
+  const accounts = (s.accounts || []).map(sanitizeAccount).map(a => {
+    if (a.autoToken) return { ...a, autoToken: '' };
+    return a;
+  });
+  await setSettings({ accounts });
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -149,7 +266,7 @@ async function apiCall(rpc, body, token) {
 }
 
 // ───────────────────────────────────────────────────────────────
-// Build today's earnings payload
+// Build today's earnings payload (per-account)
 // ───────────────────────────────────────────────────────────────
 function pad2(n) { return String(n).padStart(2, '0'); }
 
@@ -233,25 +350,26 @@ async function postToDestination(payload, settings) {
 }
 
 // ───────────────────────────────────────────────────────────────
-// Main sync routine
+// Sync a single account
 // ───────────────────────────────────────────────────────────────
-async function performSync({ triggeredBy = 'manual' } = {}) {
-  const settings = await getSettings();
-  const { token, source } = await resolveToken();
+async function syncOneAccount(accountId) {
+  const s = await getSettings();
+  const accounts = (s.accounts || []).map(sanitizeAccount);
+  const idx = accounts.findIndex(a => a.id === accountId);
+  if (idx === -1) return { ok: false, error: 'Account not found', accountId };
+  const acc = accounts[idx];
+  const { token, source } = getAccountToken(acc);
 
   if (!token) {
-    const err = 'No auth token. Open https://manage.unitynodes.io and sign in, or paste a token in Settings.';
-    await setSettings({
+    accounts[idx] = sanitizeAccount({
+      ...acc,
       lastSync: new Date().toISOString(),
       lastSyncStatus: 'error',
-      lastSyncError: err,
-      tokenSource: null
+      lastSyncError: 'No auth token. Open https://manage.unitynodes.io and sign in to this account, or paste a token in Settings.'
     });
-    return { ok: false, error: err };
+    await setSettings({ accounts });
+    return { ok: false, error: 'No auth token', accountId };
   }
-
-  const email = decodeJwtEmail(token);
-  await setSettings({ tokenSource: source, detectedEmail: email });
 
   try {
     const [balRes, allocRes] = await Promise.allSettled([
@@ -260,19 +378,23 @@ async function performSync({ triggeredBy = 'manual' } = {}) {
     ]);
     const balance = balRes.status === 'fulfilled' ? balRes.value : null;
     const allocations = allocRes.status === 'fulfilled' ? (allocRes.value || []) : [];
-
     if (allocRes.status === 'rejected') {
       throw new Error(allocRes.reason?.message || 'Failed to fetch allocations');
     }
 
+    const email = decodeJwtEmail(token) || acc.email || null;
     const payload = buildPayload(allocations, balance, email);
+    payload.account_id = acc.id;
+    payload.account_label = acc.label || email || 'Unity Account';
+    payload.token_source = source;
 
-    let destResult = null;
-    if (settings.destinationUrl) {
-      destResult = await postToDestination(payload, settings);
-    }
-
-    await setSettings({
+    accounts[idx] = sanitizeAccount({
+      ...acc,
+      email: email || acc.email,
+      // Auto-update label if it was a placeholder
+      label: acc.label && acc.label !== email && acc.label !== 'Unity Account' && acc.label !== 'Account 1'
+        ? acc.label
+        : (email || acc.label || 'Unity Account'),
       lastSync: new Date().toISOString(),
       lastSyncStatus: 'ok',
       lastSyncError: null,
@@ -287,25 +409,130 @@ async function performSync({ triggeredBy = 'manual' } = {}) {
         email: payload.email
       }
     });
-
-    await ensureTrackerTab(triggeredBy);
-
-    return {
-      ok: true,
-      triggeredBy,
-      payload,
-      destinationPosted: !!settings.destinationUrl,
-      destResult
-    };
+    await setSettings({ accounts });
+    return { ok: true, accountId, payload };
   } catch (err) {
     const msg = err?.message || String(err);
-    await setSettings({
+    accounts[idx] = sanitizeAccount({
+      ...acc,
       lastSync: new Date().toISOString(),
       lastSyncStatus: 'error',
       lastSyncError: msg
     });
-    return { ok: false, error: msg };
+    await setSettings({ accounts });
+    return { ok: false, error: msg, accountId };
   }
+}
+
+// ───────────────────────────────────────────────────────────────
+// Main sync routine — sync all enabled accounts (or one by id)
+// ───────────────────────────────────────────────────────────────
+async function performSync({ triggeredBy = 'manual', accountId = null } = {}) {
+  await migrateLegacyIfNeeded();
+  const s = await getSettings();
+  const allAccounts = (s.accounts || []).map(sanitizeAccount);
+
+  let toSync;
+  if (accountId) {
+    toSync = allAccounts.filter(a => a.id === accountId);
+    if (toSync.length === 0) {
+      return { ok: false, error: 'Account not found', triggeredBy };
+    }
+  } else {
+    toSync = allAccounts.filter(a => a.enabled !== false);
+  }
+
+  if (toSync.length === 0) {
+    const err = 'No accounts configured. Open https://manage.unitynodes.io and sign in to capture a token, or add a manual token in Settings.';
+    await setSettings({
+      lastSync: new Date().toISOString(),
+      lastSyncStatus: 'error',
+      lastSyncError: err
+    });
+    return { ok: false, error: err, triggeredBy };
+  }
+
+  const results = [];
+  for (const acc of toSync) {
+    const r = await syncOneAccount(acc.id);
+    results.push(r);
+  }
+
+  const okPayloads = results.filter(r => r.ok).map(r => r.payload);
+  const totalToday = okPayloads.reduce((sum, p) => sum + (p.total_usd || 0), 0);
+  const totalLifetime = okPayloads.reduce((sum, p) => sum + (p.lifetime_usd || 0), 0);
+  const totalBalance = okPayloads.reduce((sum, p) => sum + (p.balance_usd || 0), 0);
+  const okCount = okPayloads.length;
+  const errCount = results.length - okCount;
+
+  const multiPayload = {
+    source: 'chrome-extension',
+    version: VERSION,
+    multi: true,
+    synced_at: new Date().toISOString(),
+    triggered_by: triggeredBy,
+    account_count: results.length,
+    ok_count: okCount,
+    error_count: errCount,
+    total_usd: Number(totalToday.toFixed(6)),
+    lifetime_usd: Number(totalLifetime.toFixed(6)),
+    balance_usd: Number(totalBalance.toFixed(6)),
+    accounts: okPayloads,
+    errors: results.filter(r => !r.ok).map(r => ({ account_id: r.accountId, error: r.error }))
+  };
+
+  const overallStatus = errCount === 0 ? 'ok' : (okCount === 0 ? 'error' : 'partial');
+  await setSettings({
+    lastSync: new Date().toISOString(),
+    lastSyncStatus: overallStatus,
+    lastSyncError: errCount === 0
+      ? null
+      : results.filter(r => !r.ok).map(r => r.error).join(' · '),
+    lastMultiPayload: multiPayload,
+    lastFullPayload: okPayloads[0] || null,    // backwards-compat for single-account tracker listeners
+    lastSummary: {
+      total_usd: multiPayload.total_usd,
+      lifetime_usd: multiPayload.lifetime_usd,
+      balance_usd: multiPayload.balance_usd,
+      account_count: multiPayload.account_count,
+      ok_count: multiPayload.ok_count,
+      error_count: multiPayload.error_count,
+      date: okPayloads[0]?.date || null
+    }
+  });
+
+  // Optional HTTP destination — one POST per account + one combined POST
+  let destResults = [];
+  if (s.destinationUrl) {
+    for (const p of okPayloads) {
+      try {
+        const r = await postToDestination(p, s);
+        destResults.push({ ok: true, account_id: p.account_id, status: r.status });
+      } catch (err) {
+        destResults.push({ ok: false, account_id: p.account_id, error: err?.message || String(err) });
+      }
+    }
+    if (okPayloads.length > 0) {
+      try {
+        const r = await postToDestination(multiPayload, s);
+        destResults.push({ ok: true, combined: true, status: r.status });
+      } catch (err) {
+        destResults.push({ ok: false, combined: true, error: err?.message || String(err) });
+      }
+    }
+  }
+
+  await ensureTrackerTab(triggeredBy);
+
+  return {
+    ok: overallStatus !== 'error',
+    status: overallStatus,
+    triggeredBy,
+    results,
+    summary: multiPayload,
+    destinationPosted: !!s.destinationUrl,
+    destResults
+  };
 }
 
 async function testDestination() {
@@ -318,6 +545,7 @@ async function testDestination() {
       source: 'chrome-extension',
       version: VERSION,
       test: true,
+      multi: true,
       synced_at: new Date().toISOString(),
       message: 'Hello from Unity Nodes Earnings Tracker — this is a test ping.'
     }, settings);
@@ -328,7 +556,69 @@ async function testDestination() {
 }
 
 // ───────────────────────────────────────────────────────────────
-// Alarms — auto-sync scheduling
+// Account CRUD
+// ───────────────────────────────────────────────────────────────
+async function addManualAccount({ label, manualToken }) {
+  await migrateLegacyIfNeeded();
+  const tok = (manualToken || '').trim();
+  if (!tok) return { ok: false, error: 'A manual token is required to add an account.' };
+  const email = decodeJwtEmail(tok);
+  const s = await getSettings();
+  const accounts = (s.accounts || []).map(sanitizeAccount);
+
+  // If an account with the same email already exists, just update its manualToken instead of duplicating.
+  const existingIdx = email ? accounts.findIndex(a => a.email === email) : -1;
+  if (existingIdx >= 0) {
+    accounts[existingIdx] = sanitizeAccount({
+      ...accounts[existingIdx],
+      manualToken: tok,
+      label: (label || '').trim() || accounts[existingIdx].label,
+      enabled: true
+    });
+    await setSettings({ accounts });
+    return { ok: true, account_id: accounts[existingIdx].id, updated: true };
+  }
+
+  const newAcc = sanitizeAccount({
+    id: uuid(),
+    label: (label || '').trim() || email || 'Unity Account',
+    email,
+    autoToken: '',
+    manualToken: tok,
+    enabled: true
+  });
+  accounts.push(newAcc);
+  await setSettings({ accounts });
+  return { ok: true, account_id: newAcc.id };
+}
+
+async function updateAccount({ id, patch }) {
+  await migrateLegacyIfNeeded();
+  const s = await getSettings();
+  const accounts = (s.accounts || []).map(sanitizeAccount);
+  const idx = accounts.findIndex(a => a.id === id);
+  if (idx === -1) return { ok: false, error: 'Account not found' };
+  const merged = sanitizeAccount({ ...accounts[idx], ...patch });
+  // Re-decode email from manualToken if it changed and provides one
+  if (patch && patch.manualToken !== undefined) {
+    const decoded = decodeJwtEmail((patch.manualToken || '').trim());
+    if (decoded) merged.email = decoded;
+  }
+  accounts[idx] = merged;
+  await setSettings({ accounts });
+  return { ok: true };
+}
+
+async function removeAccount({ id }) {
+  await migrateLegacyIfNeeded();
+  const s = await getSettings();
+  const accounts = (s.accounts || []).map(sanitizeAccount).filter(a => a.id !== id);
+  await setSettings({ accounts });
+  return { ok: true, remaining: accounts.length };
+}
+
+// ───────────────────────────────────────────────────────────────
+// Alarms — auto-sync scheduling (syncs ALL enabled accounts on tick)
 // ───────────────────────────────────────────────────────────────
 async function rescheduleAlarm() {
   const s = await getSettings();
@@ -363,13 +653,14 @@ async function rescheduleAlarm() {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== ALARM_NAME) return;
   const result = await performSync({ triggeredBy: 'alarm' });
-  if (!result.ok) {
+  if (!result.ok || result.status === 'partial') {
     try {
+      const errMsg = (result.error || result.summary?.errors?.map(e => e.error).join('; ') || 'Sync failed.').slice(0, 200);
       chrome.notifications.create({
         type: 'basic',
         iconUrl: 'icons/icon128.png',
-        title: 'Unity Sync Failed',
-        message: result.error?.slice(0, 200) || 'Unknown error'
+        title: result.status === 'partial' ? 'Unity Sync — partial failure' : 'Unity Sync Failed',
+        message: errMsg
       });
     } catch (e) { /* notifications may be disabled */ }
   }
@@ -380,8 +671,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
-chrome.runtime.onInstalled.addListener(rescheduleAlarm);
-chrome.runtime.onStartup.addListener(rescheduleAlarm);
+chrome.runtime.onInstalled.addListener(async () => {
+  await migrateLegacyIfNeeded();
+  await rescheduleAlarm();
+});
+chrome.runtime.onStartup.addListener(async () => {
+  await migrateLegacyIfNeeded();
+  await rescheduleAlarm();
+});
 
 // ───────────────────────────────────────────────────────────────
 // Message router
@@ -393,18 +690,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'TOKEN_UPDATE': {
           // From content script — auto-detected token on manage.unitynodes.io
           if (msg.token) {
-            const email = decodeJwtEmail(msg.token);
-            await chrome.storage.local.set({ autoToken: msg.token });
-            await setSettings({ detectedEmail: email, tokenSource: 'auto' });
-            sendResponse({ ok: true, email });
+            const r = await upsertAutoAccount(msg.token);
+            sendResponse({ ok: true, email: r.email, account_count: r.count });
           } else {
-            await chrome.storage.local.remove(['autoToken']);
+            await clearAutoTokenIfPresent();
             sendResponse({ ok: true });
           }
           break;
         }
         case 'SYNC_NOW': {
-          const result = await performSync({ triggeredBy: msg.triggeredBy || 'popup' });
+          const result = await performSync({
+            triggeredBy: msg.triggeredBy || 'popup',
+            accountId: msg.accountId || null
+          });
           sendResponse(result);
           break;
         }
@@ -414,14 +712,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case 'GET_STATUS': {
+          await migrateLegacyIfNeeded();
           const s = await getSettings();
-          const autoTok = await chrome.storage.local.get(['autoToken']);
           sendResponse({
             ok: true,
             settings: s,
-            hasAutoToken: !!autoTok.autoToken,
-            hasManualToken: !!(s.manualToken && s.manualToken.trim())
+            accounts: (s.accounts || []).map(sanitizeAccount)
           });
+          break;
+        }
+        case 'ADD_MANUAL_ACCOUNT': {
+          const result = await addManualAccount({ label: msg.label, manualToken: msg.manualToken });
+          sendResponse(result);
+          break;
+        }
+        case 'UPDATE_ACCOUNT': {
+          const result = await updateAccount({ id: msg.id, patch: msg.patch || {} });
+          sendResponse(result);
+          break;
+        }
+        case 'REMOVE_ACCOUNT': {
+          const result = await removeAccount({ id: msg.id });
+          sendResponse(result);
           break;
         }
         case 'RESCHEDULE_ALARM': {
