@@ -3,7 +3,9 @@
 const API_BASE = 'https://api.unityedge.io/rest/v1/rpc/';
 const API_KEY = 'sb_publishable_yKqi0fu5vV6G4ryUIMJuzw_NCoFEl1c';
 const ALARM_NAME = 'unity-auto-sync';
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
+const TRACKER_URL = 'https://nam-qyn8.onrender.com/';
+const TRACKER_MATCH = 'https://nam-qyn8.onrender.com/*';
 
 const DEFAULT_SETTINGS = {
   destinationUrl: '',
@@ -56,6 +58,42 @@ async function resolveToken() {
     return { token: auto.autoToken, source: 'auto' };
   }
   return { token: null, source: null };
+}
+
+// ───────────────────────────────────────────────────────────────
+// Tracker tab — ensure https://nam-qyn8.onrender.com/ is open so
+// content-app.js can receive the postMessage bridge.
+// ───────────────────────────────────────────────────────────────
+async function ensureTrackerTab(triggeredBy) {
+  try {
+    const tabs = await chrome.tabs.query({ url: TRACKER_MATCH });
+    if (tabs && tabs.length > 0) {
+      // Reuse the most recently active tab; reload it if it errored out.
+      const tab = tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
+      if (tab.status === 'unloaded' || tab.discarded) {
+        await chrome.tabs.reload(tab.id);
+      }
+      // Only auto-focus when the user manually triggered the sync; alarms
+      // shouldn't steal focus from whatever the user is doing.
+      if (triggeredBy === 'popup' || triggeredBy === 'manual') {
+        try {
+          await chrome.tabs.update(tab.id, { active: true });
+          if (tab.windowId != null) {
+            await chrome.windows.update(tab.windowId, { focused: true });
+          }
+        } catch (e) { /* windows API may be unavailable — ignore */ }
+      }
+      return tab;
+    }
+    // No tab exists — create one. Background-triggered syncs open it inactive
+    // so they don't steal focus; manual syncs make it the active tab.
+    const active = (triggeredBy === 'popup' || triggeredBy === 'manual');
+    const created = await chrome.tabs.create({ url: TRACKER_URL, active });
+    return created;
+  } catch (err) {
+    // tabs API may be missing if user denied the optional permission — silent.
+    return null;
+  }
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -259,6 +297,7 @@ async function performSync({ triggeredBy = 'manual' } = {}) {
       lastSync: new Date().toISOString(),
       lastSyncStatus: 'ok',
       lastSyncError: null,
+      lastFullPayload: payload,        // Full payload — content-app.js reads this and forwards to the page
       lastEarnings: {
         date: payload.date,
         total_usd: payload.total_usd,
@@ -269,6 +308,9 @@ async function performSync({ triggeredBy = 'manual' } = {}) {
         email: payload.email
       }
     });
+
+    // Make sure the tracker page is open so it receives the EARNINGS_PUSH bridge message.
+    await ensureTrackerTab(triggeredBy);
 
     return {
       ok: true,

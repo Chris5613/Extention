@@ -63,9 +63,7 @@ async function refreshStatus() {
   statusEl.className = 'status';
   if (settings.lastSyncStatus === 'ok') {
     statusEl.classList.add('success');
-    statusEl.textContent = settings.destinationUrl
-      ? 'Synced to your tracking site.'
-      : 'Fetched. Set destination URL in Settings.';
+    statusEl.textContent = 'Synced — payload pushed to tracker.';
   } else if (settings.lastSyncStatus === 'error') {
     statusEl.classList.add('error');
     statusEl.textContent = settings.lastSyncError || 'Last sync failed.';
@@ -104,9 +102,7 @@ async function doSync() {
   if (res?.ok) {
     const p = res.payload;
     statusEl.className = 'status success';
-    statusEl.textContent = res.destinationPosted
-      ? `Synced $${p.total_usd.toFixed(3)} → your site`
-      : `Fetched $${p.total_usd.toFixed(3)} (no destination set)`;
+    statusEl.textContent = `Synced $${p.total_usd.toFixed(3)} → tracker`;
   } else {
     statusEl.className = 'status error';
     statusEl.textContent = res?.error || 'Sync failed.';

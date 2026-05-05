@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Unity Nodes Earnings Tracker",
-  "version": "1.0.0",
-  "description": "Fetches your Unity Nodes daily earnings and syncs them to your own tracking site.",
-  "permissions": ["storage", "alarms", "notifications"],
+  "version": "1.1.0",
+  "description": "Fetches your Unity Nodes daily earnings and forwards them to your Net Worth tracker via in-page messaging (no server hop).",
+  "permissions": ["storage", "alarms", "notifications", "tabs"],
   "host_permissions": [
     "https://manage.unitynodes.io/*",
     "https://api.unityedge.io/*",
+    "https://nam-qyn8.onrender.com/*",
     "http://*/*",
     "https://*/*"
   ],
@@ -18,6 +19,12 @@
       "matches": ["https://manage.unitynodes.io/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://nam-qyn8.onrender.com/*"],
+      "js": ["content-app.js"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "action": {
