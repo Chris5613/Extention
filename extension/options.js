@@ -320,14 +320,90 @@ function timeAgo(iso) {
 }
 
 // ───────────────────────────────────────────────────────────────
+// Diagnostics
+// ───────────────────────────────────────────────────────────────
+async function loadDiagnostics() {
+  const grid = $('diag-grid');
+  const logEl = $('diag-log');
+  const res = await chrome.runtime.sendMessage({ type: 'GET_DIAGNOSTICS' });
+  if (!res?.ok) {
+    grid.textContent = 'Could not load diagnostics.';
+    return;
+  }
+
+  const rows = [];
+  const fmt = (iso) => iso ? new Date(iso).toLocaleString() : '—';
+  const ago = (iso) => iso ? timeAgo(iso) : '—';
+
+  rows.push(['Auto-sync', res.autoSync ? 'ON' : 'OFF', res.autoSync ? 'ok' : 'warn']);
+  rows.push(['Mode', `${res.autoSyncMode}${res.autoSyncMode === 'daily' ? ` @ ${res.autoSyncDailyTime} ${res.autoSyncTimezone}` : ` every ${res.autoSyncMinutes || '?'}m`}`, '']);
+  rows.push(['Accounts (enabled)', String(res.accountCount), res.accountCount > 0 ? 'ok' : 'err']);
+  rows.push(['Alarm in Chrome', res.alarmExists ? 'YES' : 'NO (will be re-armed on next SW wake)', res.alarmExists ? 'ok' : 'warn']);
+  if (res.alarmExists) {
+    rows.push(['Alarm fires at', fmt(res.alarmScheduledTime), '']);
+    if (res.alarmPeriodInMinutes) rows.push(['Repeats every', `${res.alarmPeriodInMinutes}m`, '']);
+  }
+  rows.push(['Stored next sync', fmt(res.nextScheduledAt), '']);
+  rows.push(['Last sync', `${fmt(res.lastSync)} (${ago(res.lastSync)})`, res.lastSyncStatus === 'ok' ? 'ok' : (res.lastSyncStatus === 'error' ? 'err' : '')]);
+  rows.push(['Last status', res.lastSyncStatus || 'never run', res.lastSyncStatus === 'ok' ? 'ok' : (res.lastSyncStatus === 'error' ? 'err' : '')]);
+  if (res.lastSyncError) rows.push(['Last error', res.lastSyncError, 'err']);
+
+  grid.innerHTML = rows.map(([k, v, cls]) => `
+    <div class="diag-key">${escapeHtml(k)}</div>
+    <div class="diag-val ${cls || ''}">${escapeHtml(v)}</div>
+  `).join('');
+
+  if (Array.isArray(res.syncLog) && res.syncLog.length > 0) {
+    logEl.textContent = res.syncLog
+      .slice()
+      .reverse()
+      .map(e => {
+        const t = new Date(e.at).toLocaleString();
+        const flag = e.ok ? '✓' : '✕';
+        const tail = e.ok
+          ? `okCount=${e.okCount ?? '?'} fail=${e.failCount ?? 0} total=$${(e.grand_total_usd ?? 0).toFixed(3)}${e.note ? ' · ' + e.note : ''}`
+          : (e.error || 'unknown error');
+        return `${flag} ${t}  [${e.triggeredBy}]  ${tail}`;
+      })
+      .join('\n');
+  } else {
+    logEl.textContent = '(empty — auto-sync has not run yet)';
+  }
+}
+
+async function rearmAlarm() {
+  await chrome.runtime.sendMessage({ type: 'RESCHEDULE_ALARM' });
+  await loadDiagnostics();
+  const msg = $('save-msg');
+  msg.className = 'save-msg saved';
+  msg.textContent = 'Alarm re-armed ✓';
+  setTimeout(() => { msg.textContent = ''; msg.className = 'save-msg'; }, 2500);
+}
+
+async function syncNowFromOptions() {
+  const btn = $('diag-syncnow-btn');
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = 'Syncing…';
+  await chrome.runtime.sendMessage({ type: 'SYNC_NOW', triggeredBy: 'options' });
+  btn.disabled = false;
+  btn.textContent = orig;
+  await loadDiagnostics();
+}
+
+// ───────────────────────────────────────────────────────────────
 // Init
 // ───────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   $('sample-payload').textContent = JSON.stringify(SAMPLE_PAYLOAD, null, 2);
   loadSettings();
+  loadDiagnostics();
 
   $('save-btn').addEventListener('click', save);
   $('test-btn').addEventListener('click', testPing);
+  $('diag-refresh-btn').addEventListener('click', loadDiagnostics);
+  $('diag-rearm-btn').addEventListener('click', rearmAlarm);
+  $('diag-syncnow-btn').addEventListener('click', syncNowFromOptions);
 
   document.querySelectorAll('input[name="autoSyncMode"]').forEach(r => {
     r.addEventListener('change', (e) => applyModeUi(e.target.value));
@@ -344,5 +420,5 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   $('add-save').addEventListener('click', addByToken);
 
-  window.addEventListener('focus', loadSettings);
+  window.addEventListener('focus', () => { loadSettings(); loadDiagnostics(); });
 });

@@ -150,6 +150,21 @@
       <pre class="code" id="sample-payload"></pre>
     </section>
 
+    <section class="card">
+      <h2>Diagnostics</h2>
+      <p class="hint">Auto-sync health check &mdash; useful if scheduled syncs aren't firing.</p>
+      <div class="diag-grid" id="diag-grid">Loading…</div>
+      <div class="row-end" style="margin-top:14px">
+        <button class="btn ghost btn-sm" id="diag-refresh-btn" type="button">Refresh</button>
+        <button class="btn ghost btn-sm" id="diag-rearm-btn" type="button">Re-arm alarm</button>
+        <button class="btn primary btn-sm" id="diag-syncnow-btn" type="button">Run sync now</button>
+      </div>
+      <details class="diag-log-wrap" id="diag-log-wrap">
+        <summary>Recent sync log (last 20)</summary>
+        <pre class="code diag-log" id="diag-log"></pre>
+      </details>
+    </section>
+
     <div class="save-bar">
       <span class="save-msg" id="save-msg"></span>
       <button class="btn primary" id="save-btn">Save Settings</button>

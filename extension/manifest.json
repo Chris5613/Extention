@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Unity Nodes Earnings Tracker",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Fetches your Unity Nodes daily earnings from one or more accounts and forwards them to your Net Worth tracker via in-page messaging.",
   "permissions": ["storage", "alarms", "notifications", "tabs"],
   "host_permissions": [

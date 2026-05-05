@@ -6,7 +6,7 @@ const API_BASE = 'https://api.unityedge.io/rest/v1/rpc/';
 const AUTH_REFRESH_URL = 'https://api.unityedge.io/auth/v1/token?grant_type=refresh_token';
 const API_KEY = 'sb_publishable_yKqi0fu5vV6G4ryUIMJuzw_NCoFEl1c';
 const ALARM_NAME = 'unity-auto-sync';
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const TRACKER_URL = 'https://nam-qyn8.onrender.com/';
 const TRACKER_MATCH = 'https://nam-qyn8.onrender.com/*';
 
@@ -349,12 +349,31 @@ function buildCombinedPayload(perAccountResults) {
 // Sync orchestrator
 // ───────────────────────────────────────────────────────────────
 async function performSync({ triggeredBy = 'manual' } = {}) {
+  try {
+    return await _performSyncInner({ triggeredBy });
+  } catch (err) {
+    // Top-level safety net — never leak unhandled rejections to alarm handler.
+    const msg = err?.message || String(err);
+    await appendSyncLog({ at: new Date().toISOString(), triggeredBy, ok: false, error: msg });
+    try {
+      await setSettings({
+        lastSync: new Date().toISOString(),
+        lastSyncStatus: 'error',
+        lastSyncError: 'Internal error: ' + msg
+      });
+    } catch (e) { /* storage broken — nothing more we can do */ }
+    return { ok: false, error: msg };
+  }
+}
+
+async function _performSyncInner({ triggeredBy }) {
   const settings = await getSettings();
   const accounts = (await getAccounts()).filter(a => a.enabled !== false);
 
   if (accounts.length === 0) {
     const err = 'No accounts configured. Open Settings → Accounts → Add account, or sign in on manage.unitynodes.io.';
     await setSettings({ lastSync: new Date().toISOString(), lastSyncStatus: 'error', lastSyncError: err });
+    await appendSyncLog({ at: new Date().toISOString(), triggeredBy, ok: false, error: err });
     return { ok: false, error: err };
   }
 
@@ -402,6 +421,15 @@ async function performSync({ triggeredBy = 'manual' } = {}) {
     }
   });
 
+  await appendSyncLog({
+    at: new Date().toISOString(),
+    triggeredBy,
+    ok: overallOk,
+    okCount, failCount,
+    grand_total_usd: combined.grand_total_usd,
+    error: overallOk ? null : (combined.errors[0]?.error || 'All accounts failed')
+  });
+
   if (overallOk) await ensureTrackerTab(triggeredBy);
 
   return {
@@ -413,6 +441,16 @@ async function performSync({ triggeredBy = 'manual' } = {}) {
     destinationPosted: !!settings.destinationUrl,
     destResult
   };
+}
+
+// Keep last 20 sync events for diagnostics — visible in Settings → Diagnostics.
+async function appendSyncLog(entry) {
+  try {
+    const { syncLog } = await chrome.storage.local.get(['syncLog']);
+    const next = Array.isArray(syncLog) ? syncLog.slice(-19) : [];
+    next.push(entry);
+    await chrome.storage.local.set({ syncLog: next });
+  } catch (e) { /* ignore */ }
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -503,26 +541,61 @@ async function rescheduleAlarm() {
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== ALARM_NAME) return;
-  const result = await performSync({ triggeredBy: 'alarm' });
-  if (!result.ok) {
-    try {
-      chrome.notifications.create({
-        type: 'basic',
-        iconUrl: 'icons/icon128.png',
-        title: 'Unity Sync Failed',
-        message: result.error?.slice(0, 200) || 'Unknown error'
-      });
-    } catch (e) { /* ignore */ }
+  // Reschedule FIRST — locks in tomorrow's daily alarm even if sync hangs/crashes.
+  // Do this before sync so we never lose the recurring cycle.
+  try {
+    const s0 = await getSettings();
+    if (s0.autoSync && s0.autoSyncMode === 'daily') await rescheduleAlarm();
+  } catch (e) { /* will retry below */ }
+
+  try {
+    const result = await performSync({ triggeredBy: 'alarm' });
+    if (!result.ok) {
+      try {
+        chrome.notifications.create({
+          type: 'basic',
+          iconUrl: 'icons/icon128.png',
+          title: 'Unity Sync Failed',
+          message: result.error?.slice(0, 200) || 'Unknown error'
+        });
+      } catch (e) { /* ignore */ }
+    }
+  } catch (e) {
+    // performSync has its own try/catch but be defensive
+    await appendSyncLog({ at: new Date().toISOString(), triggeredBy: 'alarm', ok: false, error: 'Alarm handler crash: ' + e.message });
   }
-  const s = await getSettings();
-  if (s.autoSync && s.autoSyncMode === 'daily') await rescheduleAlarm();
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
   await migrateLegacyTokens();
   await rescheduleAlarm();
 });
-chrome.runtime.onStartup.addListener(rescheduleAlarm);
+chrome.runtime.onStartup.addListener(async () => {
+  await ensureAlarmHealthy();
+});
+
+// Self-healing: every time the service worker wakes, make sure the alarm
+// is still scheduled. MV3 SWs are aggressively unloaded; if the alarm got
+// dropped (e.g. extension was disabled briefly), recreate it.
+async function ensureAlarmHealthy() {
+  try {
+    const s = await getSettings();
+    if (!s.autoSync) return;
+    const existing = await chrome.alarms.get(ALARM_NAME);
+    if (!existing) {
+      await rescheduleAlarm();
+      await appendSyncLog({ at: new Date().toISOString(), triggeredBy: 'self-heal', ok: true, note: 'Re-armed missing alarm' });
+    } else if (s.autoSyncMode === 'daily' && s.nextScheduledAt) {
+      // Sanity check: stored nextScheduledAt should match the alarm's scheduledTime.
+      // If they're more than a minute apart, alarm is stale → reschedule.
+      const drift = Math.abs(existing.scheduledTime - new Date(s.nextScheduledAt).getTime());
+      if (drift > 60000) await rescheduleAlarm();
+    }
+  } catch (e) { /* silent */ }
+}
+
+// Run health check on every SW wake (top-level statement = runs on every cold start).
+ensureAlarmHealthy();
 
 // ───────────────────────────────────────────────────────────────
 // Migration — move pre-1.2.0 tokens (autoToken / manualToken) into accounts[]
@@ -710,6 +783,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             settings: s,
             accounts: s.accounts || [],
             currentAutoSession: cur || null
+          });
+          break;
+        }
+        case 'GET_DIAGNOSTICS': {
+          const s = await getSettings();
+          const stored = await chrome.storage.local.get(['syncLog']);
+          const alarm = await chrome.alarms.get(ALARM_NAME);
+          sendResponse({
+            ok: true,
+            autoSync: s.autoSync,
+            autoSyncMode: s.autoSyncMode,
+            autoSyncDailyTime: s.autoSyncDailyTime,
+            autoSyncTimezone: s.autoSyncTimezone,
+            nextScheduledAt: s.nextScheduledAt,
+            alarmExists: !!alarm,
+            alarmScheduledTime: alarm ? new Date(alarm.scheduledTime).toISOString() : null,
+            alarmPeriodInMinutes: alarm?.periodInMinutes || null,
+            accountCount: (s.accounts || []).filter(a => a.enabled !== false).length,
+            lastSync: s.lastSync,
+            lastSyncStatus: s.lastSyncStatus,
+            lastSyncError: s.lastSyncError,
+            syncLog: (stored.syncLog || []).slice(-20)
           });
           break;
         }

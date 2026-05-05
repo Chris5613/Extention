@@ -390,6 +390,42 @@ input:focus, textarea:focus, select:focus {
 }
 .btn-sm { padding: 7px 12px; font-size: 12px; }
 
+/* Diagnostics card */
+.diag-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 18px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+}
+.diag-grid .diag-key { color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; font-size: 9px; align-self: center; }
+.diag-grid .diag-val { color: var(--text-1); word-break: break-all; }
+.diag-grid .diag-val.ok { color: var(--success); }
+.diag-grid .diag-val.err { color: var(--error); }
+.diag-grid .diag-val.warn { color: var(--warning); }
+
+.diag-log-wrap {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.diag-log-wrap summary {
+  cursor: pointer;
+  padding: 6px 0;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.diag-log {
+  font-size: 10px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+
 /* Code block */
 .code {
   font-family: 'JetBrains Mono', monospace;
