@@ -1,4 +1,4 @@
-// Popup script — displays current status and triggers manual sync.
+// Popup — multi-account display + manual sync trigger.
 
 const $ = (id) => document.getElementById(id);
 
@@ -23,47 +23,61 @@ function timeAgo(iso) {
 async function refreshStatus() {
   const res = await chrome.runtime.sendMessage({ type: 'GET_STATUS' });
   if (!res?.ok) return;
-  const { settings, hasAutoToken, hasManualToken } = res;
+  const { settings, accounts, currentAutoSession } = res;
 
-  // Token state pill
+  // Account-count pill
   const pill = $('token-pill');
-  if (hasManualToken) {
-    pill.dataset.state = 'manual';
-    pill.textContent = 'Manual token';
-  } else if (hasAutoToken) {
-    pill.dataset.state = 'auto';
-    pill.textContent = 'Auto-detected';
-  } else {
+  const enabledCount = (accounts || []).filter(a => a.enabled !== false).length;
+  if (enabledCount === 0) {
     pill.dataset.state = 'missing';
-    pill.textContent = 'No token';
+    pill.textContent = 'No accounts';
+  } else if (enabledCount === 1) {
+    pill.dataset.state = 'auto';
+    pill.textContent = '1 account';
+  } else {
+    pill.dataset.state = 'auto';
+    pill.textContent = `${enabledCount} accounts`;
   }
 
-  // Email / subtitle
-  if (settings.detectedEmail) {
-    $('email').textContent = settings.detectedEmail;
-  } else if (hasManualToken) {
-    $('email').textContent = 'Using manual token';
+  // Subtitle: current session email or list of saved
+  if (enabledCount === 0 && currentAutoSession?.email) {
+    $('email').textContent = `Detected: ${currentAutoSession.email} (not added)`;
+  } else if (enabledCount > 0) {
+    const labels = accounts.filter(a => a.enabled !== false).map(a => a.label || a.email).slice(0, 2);
+    $('email').textContent = labels.join(', ') + (enabledCount > 2 ? ` +${enabledCount - 2} more` : '');
   } else {
     $('email').textContent = 'Open manage.unitynodes.io to detect';
   }
 
-  // Earnings
+  // Earnings (grand totals across all accounts)
   const e = settings.lastEarnings;
+  const heroLabel = $('hero-label');
   if (e) {
     $('today-usd').textContent = fmtUsd(e.total_usd, 3);
-    $('today-meta').textContent =
-      `${e.allocation_count || 0} payout${e.allocation_count === 1 ? '' : 's'} · ${e.device_count || 0} device${e.device_count === 1 ? '' : 's'}`;
+    if (e.account_count > 1) {
+      heroLabel.textContent = `TODAY'S EARNINGS · ${e.account_count} ACCOUNTS`;
+    } else {
+      heroLabel.textContent = "TODAY'S EARNINGS";
+    }
+    const parts = [
+      `${e.allocation_count || 0} payout${e.allocation_count === 1 ? '' : 's'}`,
+      `${e.device_count || 0} device${e.device_count === 1 ? '' : 's'}`
+    ];
+    if (e.failed_account_count > 0) parts.push(`⚠ ${e.failed_account_count} failed`);
+    $('today-meta').textContent = parts.join(' · ');
     $('balance').textContent = fmtUsd(e.balance_usd, 2);
     $('lifetime').textContent = fmtUsd(e.lifetime_usd, 2);
     $('date').textContent = e.date || '—';
   }
 
-  // Status
+  // Status line
   const statusEl = $('status');
   statusEl.className = 'status';
   if (settings.lastSyncStatus === 'ok') {
     statusEl.classList.add('success');
-    statusEl.textContent = 'Synced — payload pushed to tracker.';
+    statusEl.textContent = e?.failed_account_count > 0
+      ? `Synced — ${e.failed_account_count} of ${e.account_count + e.failed_account_count} failed`
+      : 'Synced — payload pushed to tracker.';
   } else if (settings.lastSyncStatus === 'error') {
     statusEl.classList.add('error');
     statusEl.textContent = settings.lastSyncError || 'Last sync failed.';
@@ -73,15 +87,14 @@ async function refreshStatus() {
 
   $('last-sync').textContent = settings.lastSync ? timeAgo(settings.lastSync) : '';
 
-  // Next scheduled sync (when auto-sync is on)
-  const statusEl2 = $('status');
-  if (settings.autoSync && settings.nextScheduledAt && settings.lastSyncStatus !== 'error') {
+  // Next scheduled sync (when auto-sync is on and last sync was ok)
+  if (settings.autoSync && settings.nextScheduledAt && settings.lastSyncStatus === 'ok') {
     const when = new Date(settings.nextScheduledAt);
     const whenStr = when.toLocaleString(undefined, {
       month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
     });
-    statusEl2.textContent = `Next: ${whenStr}`;
-    statusEl2.classList.remove('success', 'error');
+    statusEl.textContent = `Next: ${whenStr}`;
+    statusEl.classList.remove('success', 'error');
   }
 }
 
@@ -92,7 +105,7 @@ async function doSync() {
   btn.disabled = true;
   label.innerHTML = '<span class="spin"></span>Syncing…';
   statusEl.className = 'status working';
-  statusEl.textContent = 'Fetching earnings…';
+  statusEl.textContent = 'Fetching all accounts…';
 
   const res = await chrome.runtime.sendMessage({ type: 'SYNC_NOW', triggeredBy: 'popup' });
 
@@ -102,7 +115,8 @@ async function doSync() {
   if (res?.ok) {
     const p = res.payload;
     statusEl.className = 'status success';
-    statusEl.textContent = `Synced $${p.total_usd.toFixed(3)} → tracker`;
+    const tail = res.failCount > 0 ? ` · ${res.failCount} failed` : '';
+    statusEl.textContent = `Synced $${p.grand_total_usd.toFixed(3)} (${res.okCount} acct${res.okCount === 1 ? '' : 's'})${tail}`;
   } else {
     statusEl.className = 'status error';
     statusEl.textContent = res?.error || 'Sync failed.';

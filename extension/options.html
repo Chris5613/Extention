@@ -111,18 +111,37 @@
     </section>
 
     <section class="card">
-      <h2>Auth token</h2>
+      <h2>Accounts</h2>
       <p class="hint">
-        By default the extension auto-grabs your token from <code>manage.unitynodes.io</code> while you're signed in.
-        You can paste a token below to override (useful if you don't want to stay logged in).
+        Sync earnings from one or more Unity Nodes accounts. Each account uses its own auth token; expired tokens are refreshed automatically.
       </p>
 
-      <div class="token-status" id="token-status">Checking…</div>
+      <div class="current-detect" id="current-detect">Checking…</div>
 
-      <label class="fld">
-        <span class="label">Manual token override <em>(optional)</em></span>
-        <textarea id="manualToken" rows="3" placeholder="Paste a Bearer access_token here to override auto-detection" autocomplete="off"></textarea>
-      </label>
+      <div class="acc-list" id="acc-list"></div>
+
+      <div class="add-fold">
+        <button class="btn ghost btn-sm" id="add-toggle" type="button">+ Add account by token</button>
+        <div class="add-panel" id="add-panel" hidden>
+          <p class="hint">
+            Paste either a raw access token, or the full JSON from <code>localStorage</code> (the <code>*-auth-token</code> key on <code>manage.unitynodes.io</code>).
+            Pasting the JSON gives the extension a refresh token so it can keep the account alive automatically.
+          </p>
+          <label class="fld">
+            <span class="label">Label <em>(optional)</em></span>
+            <input id="add-label" type="text" placeholder="e.g. Account #2" autocomplete="off" />
+          </label>
+          <label class="fld">
+            <span class="label">Token or session JSON</span>
+            <textarea id="add-token" rows="4" placeholder="eyJhbGc... or {&quot;access_token&quot;:&quot;...&quot;,&quot;refresh_token&quot;:&quot;...&quot;}"></textarea>
+          </label>
+          <div class="row-end">
+            <button class="btn ghost btn-sm" id="add-cancel" type="button">Cancel</button>
+            <button class="btn primary btn-sm" id="add-save" type="button">Save account</button>
+            <span class="test-status" id="add-status"></span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="card">
