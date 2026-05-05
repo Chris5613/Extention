@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Unity Nodes Earnings Tracker — Settings</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="page-hdr">
+      <div class="brand">
+        <div class="mark">U</div>
+        <div>
+          <h1>Unity Nodes Earnings Tracker</h1>
+          <p class="sub">Settings &amp; destination configuration</p>
+        </div>
+      </div>
+      <span class="version">v1.0.0</span>
+    </header>
+
+    <section class="card">
+      <h2>Destination</h2>
+      <p class="hint">Your earnings will be POSTed to this URL as JSON. Leave blank to only view data in the popup.</p>
+
+      <label class="fld">
+        <span class="label">Destination URL</span>
+        <input id="destinationUrl" type="url" placeholder="https://your-site.com/api/unity-sync" autocomplete="off" />
+      </label>
+
+      <div class="grid-2">
+        <label class="fld">
+          <span class="label">Auth header name <em>(optional)</em></span>
+          <input id="authHeaderName" type="text" placeholder="Authorization" autocomplete="off" />
+        </label>
+        <label class="fld">
+          <span class="label">Auth header value <em>(optional)</em></span>
+          <input id="authHeaderValue" type="text" placeholder="Bearer your-api-key" autocomplete="off" />
+        </label>
+      </div>
+
+      <div class="row-end">
+        <button class="btn ghost" id="test-btn">Send test ping</button>
+        <span class="test-status" id="test-status"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Auto-sync</h2>
+      <p class="hint">Run in the background and push earnings to your destination automatically.</p>
+
+      <label class="toggle">
+        <input type="checkbox" id="autoSync" />
+        <span class="slider"></span>
+        <span class="toggle-label">Enable auto-sync</span>
+      </label>
+
+      <label class="fld">
+        <span class="label">Sync every</span>
+        <select id="autoSyncMinutes">
+          <option value="10">10 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="60" selected>1 hour</option>
+          <option value="180">3 hours</option>
+          <option value="360">6 hours</option>
+          <option value="720">12 hours</option>
+          <option value="1440">Once a day</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>Auth token</h2>
+      <p class="hint">
+        By default the extension auto-grabs your token from <code>manage.unitynodes.io</code> while you're signed in.
+        You can paste a token below to override (useful if you don't want to stay logged in).
+      </p>
+
+      <div class="token-status" id="token-status">Checking…</div>
+
+      <label class="fld">
+        <span class="label">Manual token override <em>(optional)</em></span>
+        <textarea id="manualToken" rows="3" placeholder="Paste a Bearer access_token here to override auto-detection" autocomplete="off"></textarea>
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>Payload format</h2>
+      <p class="hint">Your destination will receive a POST with this JSON structure:</p>
+      <pre class="code" id="sample-payload"></pre>
+    </section>
+
+    <div class="save-bar">
+      <span class="save-msg" id="save-msg"></span>
+      <button class="btn primary" id="save-btn">Save Settings</button>
+    </div>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "Unity Nodes Earnings Tracker",
+  "version": "1.0.0",
+  "description": "Fetches your Unity Nodes daily earnings and syncs them to your own tracking site.",
+  "permissions": ["storage", "alarms", "notifications"],
+  "host_permissions": [
+    "https://manage.unitynodes.io/*",
+    "https://api.unityedge.io/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://manage.unitynodes.io/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Unity Nodes Earnings Tracker",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
