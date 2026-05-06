@@ -276,6 +276,10 @@ async function loadSettings() {
   $('autoSyncMinutes').value = String(currentSettings.autoSyncMinutes || 60);
   $('autoSyncDailyTime').value = currentSettings.autoSyncDailyTime || '19:20';
   $('autoSyncTimezone').value = currentSettings.autoSyncTimezone || 'America/Los_Angeles';
+  $('combinedMode').checked = currentSettings.combinedMode !== false;
+  $('combinedEmail').value = currentSettings.combinedEmail || 'combined@unity-network';
+  $('combinedLabel').value = currentSettings.combinedLabel || 'Unity Network';
+  applyCombinedFieldsState();
 
   const mode = currentSettings.autoSyncMode || 'daily';
   document.querySelectorAll('input[name="autoSyncMode"]').forEach(r => {
@@ -293,6 +297,15 @@ function applyModeUi(mode) {
   document.querySelectorAll('.mode-panel').forEach(p => {
     p.classList.toggle('active', p.dataset.mode === mode);
   });
+}
+
+function applyCombinedFieldsState() {
+  const on = $('combinedMode').checked;
+  const fields = $('combined-fields');
+  if (fields) {
+    fields.style.opacity = on ? '1' : '0.4';
+    fields.style.pointerEvents = on ? 'auto' : 'none';
+  }
 }
 
 function renderNextSync(settings) {
@@ -343,7 +356,10 @@ async function save() {
     autoSyncMode: document.querySelector('input[name="autoSyncMode"]:checked')?.value || 'daily',
     autoSyncMinutes: parseInt($('autoSyncMinutes').value, 10) || 60,
     autoSyncDailyTime: $('autoSyncDailyTime').value || '19:20',
-    autoSyncTimezone: $('autoSyncTimezone').value || 'America/Los_Angeles'
+    autoSyncTimezone: $('autoSyncTimezone').value || 'America/Los_Angeles',
+    combinedMode: $('combinedMode').checked,
+    combinedEmail: $('combinedEmail').value.trim() || 'combined@unity-network',
+    combinedLabel: $('combinedLabel').value.trim() || 'Unity Network'
   };
 
   await chrome.storage.local.set(patch);
@@ -394,6 +410,8 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('input[name="autoSyncMode"]').forEach(r => {
     r.addEventListener('change', (e) => applyModeUi(e.target.value));
   });
+
+  $('combinedMode').addEventListener('change', applyCombinedFieldsState);
 
   window.addEventListener('focus', loadSettings);
 });

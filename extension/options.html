@@ -15,7 +15,7 @@
           <p class="sub">Multi-account settings &amp; destination configuration</p>
         </div>
       </div>
-      <span class="version">v1.2.1</span>
+      <span class="version">v1.2.2</span>
     </header>
 
     <section class="card">
@@ -50,6 +50,31 @@
           </div>
         </div>
       </details>
+    </section>
+
+    <section class="card">
+      <h2>How accounts appear on your tracker</h2>
+      <p class="hint">By default the extension pushes <strong>one combined entry</strong> ("Unity Network") to your tracker that sums today's earnings, balance, and lifetime across every enabled account. Turn this off if you'd rather see each Unity account as its own asset row on the tracker.</p>
+
+      <label class="toggle">
+        <input type="checkbox" id="combinedMode" />
+        <span class="slider"></span>
+        <span class="toggle-label">Combine all accounts into one "Unity Network" entry</span>
+      </label>
+
+      <div class="grid-2" id="combined-fields">
+        <label class="fld">
+          <span class="label">Combined entry label</span>
+          <input id="combinedLabel" type="text" placeholder="Unity Network" autocomplete="off" />
+        </label>
+        <label class="fld">
+          <span class="label">Combined entry email/id <em>(dedupe key on tracker)</em></span>
+          <input id="combinedEmail" type="text" placeholder="combined@unity-network" autocomplete="off" />
+        </label>
+      </div>
+      <p class="hint" style="margin-top:6px;">
+        The <code>email</code> field is what your tracker uses to dedupe rows. Keep it unique so this entry stays separate from any other asset. If you previously had per-account rows on your tracker (e.g. <code>Unity Nodes (you@example.com)</code>), you can delete those manually after switching modes.
+      </p>
     </section>
 
     <section class="card">

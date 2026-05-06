@@ -27,10 +27,17 @@
     }
   }
 
-  // Push everything we have cached: emit one EARNINGS_PUSH per FRESHLY-refreshed
-  // account in the multi payload (avoids re-replaying stale per-account data
-  // on every sync), and one EARNINGS_PUSH_MULTI with the full combined summary
-  // (which contains every enabled account's latest known reading — fresh + cached).
+  // Push everything we have cached.
+  //
+  // - When combinedMode is ON (default in v1.2.2+): emit ONE EARNINGS_PUSH with
+  //   the combined "Unity Network" payload (all accounts summed into one row on
+  //   the tracker). EARNINGS_PUSH_MULTI is still sent so any consumer that
+  //   wants the per-account drilldown can read it.
+  //
+  // - When combinedMode is OFF: emit one EARNINGS_PUSH per freshly-refreshed
+  //   account in `multi.accounts[]` (avoids re-replaying stale per-account
+  //   data) plus EARNINGS_PUSH_MULTI with the full breakdown.
+  //
   // If only the legacy single payload exists, fall back to that.
   async function pushLatest() {
     try {
@@ -38,12 +45,14 @@
       const multi = stored && stored[STORAGE_KEY_MULTI];
       const single = stored && stored[STORAGE_KEY_SINGLE];
 
-      if (multi && Array.isArray(multi.accounts) && multi.accounts.length > 0) {
+      if (multi && (multi.combined_mode || multi.combined_payload) && multi.combined_payload) {
+        // Combined mode: one push representing all accounts.
+        postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH', payload: multi.combined_payload });
+        postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH_MULTI', payload: multi });
+      } else if (multi && Array.isArray(multi.accounts) && multi.accounts.length > 0) {
+        // Per-account mode (legacy / opt-out): only emit fresh accounts.
         const freshIds = Array.isArray(multi.fresh_account_ids) ? new Set(multi.fresh_account_ids) : null;
         for (const p of multi.accounts) {
-          // If the multi payload tagged which accounts were fresh, only emit
-          // per-account EARNINGS_PUSH for those. Older payloads without that
-          // tag fall back to emitting all (backwards compatible).
           if (freshIds && !freshIds.has(p.account_id)) continue;
           postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH', payload: p });
         }
@@ -73,7 +82,10 @@
       const multiChange = changes[STORAGE_KEY_MULTI];
       if (multiChange && multiChange.newValue) {
         const multi = multiChange.newValue;
-        if (Array.isArray(multi.accounts)) {
+        if (multi.combined_mode && multi.combined_payload) {
+          // Combined mode: only emit the combined payload as EARNINGS_PUSH.
+          postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH', payload: multi.combined_payload });
+        } else if (Array.isArray(multi.accounts)) {
           const freshIds = Array.isArray(multi.fresh_account_ids) ? new Set(multi.fresh_account_ids) : null;
           for (const p of multi.accounts) {
             if (freshIds && !freshIds.has(p.account_id)) continue;

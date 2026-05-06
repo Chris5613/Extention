@@ -5,7 +5,7 @@
 const API_BASE = 'https://api.unityedge.io/rest/v1/rpc/';
 const API_KEY = 'sb_publishable_yKqi0fu5vV6G4ryUIMJuzw_NCoFEl1c';
 const ALARM_NAME = 'unity-auto-sync';
-const VERSION = '1.2.1';
+const VERSION = '1.2.2';
 const TRACKER_URL = 'https://nam-qyn8.onrender.com/';
 const TRACKER_MATCH = 'https://nam-qyn8.onrender.com/*';
 
@@ -19,6 +19,9 @@ const DEFAULT_SETTINGS = {
   autoSyncDailyTime: '19:20',               // used when mode === 'daily'
   autoSyncTimezone: 'America/Los_Angeles',  // IANA tz; Pacific handles PST/PDT automatically
   accounts: [],                             // list of account objects (see ACCOUNT shape below)
+  combinedMode: true,                       // NEW: when true, push a single combined "Unity Network" entry to the tracker
+  combinedEmail: 'combined@unity-network',  // NEW: email/id used as the dedupe key for the combined entry on the tracker
+  combinedLabel: 'Unity Network',           // NEW: human-readable label for the combined entry
   lastSync: null,
   lastSyncStatus: null,                     // 'ok' | 'partial' | 'error'
   lastSyncError: null,
@@ -327,6 +330,65 @@ function buildPayload(allocations, balanceMicros, email) {
 }
 
 // ───────────────────────────────────────────────────────────────
+// Build a COMBINED "Unity Network" payload by aggregating each enabled
+// account's latest known reading (fresh from this run + cached from prior
+// successful syncs). The result looks like a single-account payload to any
+// tracker listener, so it shows up as ONE asset row instead of N per-account
+// rows. Per-account breakdown is still available under `accounts: [...]`
+// for any consumer that wants to drill down.
+// ───────────────────────────────────────────────────────────────
+function buildCombinedPayload(enabledAccounts, settings, triggeredBy, freshIds) {
+  const perAccount = enabledAccounts
+    .map(a => a.lastFullPayload)
+    .filter(Boolean);
+
+  const totalToday = perAccount.reduce((s, p) => s + (p.total_usd || 0), 0);
+  const totalLifetime = perAccount.reduce((s, p) => s + (p.lifetime_usd || 0), 0);
+  const totalBalance = perAccount.reduce((s, p) => s + (p.balance_usd || 0), 0);
+  const allocationCount = perAccount.reduce((s, p) => s + (p.allocation_count || 0), 0);
+  const deviceCount = perAccount.reduce((s, p) => s + (p.device_count || 0), 0);
+
+  // Flatten per-account devices + allocations so the combined payload still
+  // carries the raw breakdown (useful if the tracker supports it).
+  const devices = [];
+  const allocations = [];
+  for (const p of perAccount) {
+    (p.devices || []).forEach(d => devices.push({ ...d, account_email: p.email || null }));
+    (p.allocations || []).forEach(a => allocations.push({ ...a, account_email: p.email || null }));
+  }
+
+  const mostRecentDate = perAccount
+    .map(p => p.date)
+    .filter(Boolean)
+    .sort()
+    .pop() || null;
+
+  return {
+    source: 'chrome-extension',
+    version: VERSION,
+    combined: true,
+    synced_at: new Date().toISOString(),
+    triggered_by: triggeredBy,
+    // Tracker dedupes by email — use the user-configured combined id so all
+    // syncs land on the same row.
+    email: settings.combinedEmail || 'combined@unity-network',
+    account_label: settings.combinedLabel || 'Unity Network',
+    date: mostRecentDate,
+    total_usd: Number(totalToday.toFixed(6)),
+    lifetime_usd: Number(totalLifetime.toFixed(6)),
+    balance_usd: Number(totalBalance.toFixed(6)),
+    allocation_count: allocationCount,
+    device_count: deviceCount,
+    account_count: enabledAccounts.length,
+    ok_count: freshIds ? freshIds.size : 0,
+    error_count: enabledAccounts.length - (freshIds ? freshIds.size : 0),
+    accounts: perAccount,  // per-account breakdown for consumers that want it
+    devices,
+    allocations
+  };
+}
+
+// ───────────────────────────────────────────────────────────────
 // POST payload to user's tracking site (optional, in addition to bridge)
 // ───────────────────────────────────────────────────────────────
 async function postToDestination(payload, settings) {
@@ -495,6 +557,22 @@ async function performSync({ triggeredBy = 'manual', accountId = null } = {}) {
     errors: results.filter(r => !r.ok).map(r => ({ account_id: r.accountId, error: r.error }))
   };
 
+  // Build the COMBINED ("Unity Network") payload \u2014 a single virtual account
+  // representing all enabled accounts summed. When combinedMode is on, this is
+  // what gets pushed to the tracker as the primary EARNINGS_PUSH so it shows
+  // up as ONE asset row instead of N per-account rows.
+  const combinedPayload = buildCombinedPayload(allEnabled, s, triggeredBy, freshIds);
+  // Tag the multiPayload so content-app.js knows whether to emit per-account
+  // pushes or just the combined one.
+  multiPayload.combined_mode = !!s.combinedMode;
+  multiPayload.combined_payload = combinedPayload;
+
+  // For the EARNINGS_PUSH (single-account-style) message and HTTP destination,
+  // pick the right payload depending on combinedMode.
+  const primaryPayload = s.combinedMode
+    ? combinedPayload
+    : (okPayloads[0] || latestPerAccount[0] || null);
+
   const overallStatus = errCount === 0 ? 'ok' : (okCount === 0 ? 'error' : 'partial');
   await setSettings({
     lastSync: new Date().toISOString(),
@@ -503,7 +581,7 @@ async function performSync({ triggeredBy = 'manual', accountId = null } = {}) {
       ? null
       : results.filter(r => !r.ok).map(r => r.error).join(' · '),
     lastMultiPayload: multiPayload,
-    lastFullPayload: okPayloads[0] || latestPerAccount[0] || null,    // backwards-compat for single-account tracker listeners
+    lastFullPayload: primaryPayload,    // single-account tracker listeners get this
     lastSummary: {
       total_usd: multiPayload.total_usd,
       lifetime_usd: multiPayload.lifetime_usd,
@@ -511,27 +589,38 @@ async function performSync({ triggeredBy = 'manual', accountId = null } = {}) {
       account_count: multiPayload.account_count,
       ok_count: multiPayload.ok_count,
       error_count: multiPayload.error_count,
-      date: (okPayloads[0] || latestPerAccount[0])?.date || null
+      date: combinedPayload.date || (okPayloads[0] || latestPerAccount[0])?.date || null
     }
   });
 
-  // Optional HTTP destination — one POST per account + one combined POST
+  // Optional HTTP destination
+  // - combinedMode ON  : one POST with the combined payload (one row on the tracker)
+  // - combinedMode OFF : one POST per freshly-synced account + one combined summary POST
   let destResults = [];
   if (s.destinationUrl) {
-    for (const p of okPayloads) {
+    if (s.combinedMode) {
       try {
-        const r = await postToDestination(p, s);
-        destResults.push({ ok: true, account_id: p.account_id, status: r.status });
-      } catch (err) {
-        destResults.push({ ok: false, account_id: p.account_id, error: err?.message || String(err) });
-      }
-    }
-    if (okPayloads.length > 0) {
-      try {
-        const r = await postToDestination(multiPayload, s);
+        const r = await postToDestination(combinedPayload, s);
         destResults.push({ ok: true, combined: true, status: r.status });
       } catch (err) {
         destResults.push({ ok: false, combined: true, error: err?.message || String(err) });
+      }
+    } else {
+      for (const p of okPayloads) {
+        try {
+          const r = await postToDestination(p, s);
+          destResults.push({ ok: true, account_id: p.account_id, status: r.status });
+        } catch (err) {
+          destResults.push({ ok: false, account_id: p.account_id, error: err?.message || String(err) });
+        }
+      }
+      if (okPayloads.length > 0) {
+        try {
+          const r = await postToDestination(multiPayload, s);
+          destResults.push({ ok: true, combined: true, status: r.status });
+        } catch (err) {
+          destResults.push({ ok: false, combined: true, error: err?.message || String(err) });
+        }
       }
     }
   }
