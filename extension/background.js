@@ -131,44 +131,83 @@ async function migrateLegacyIfNeeded() {
 // ───────────────────────────────────────────────────────────────
 // Auto-token upsert (called from TOKEN_UPDATE)
 // ───────────────────────────────────────────────────────────────
-async function upsertAutoAccount(token) {
+function getJwtTokenMeta(token) {
+  const payload = decodeJwtEmail(token) ? { email: decodeJwtEmail(token) } : null;
+  try {
+    const raw = token.split('.')[1] || '';
+    const normalized = raw.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
+    const parsed = JSON.parse(atob(padded));
+    return {
+      token,
+      email: parsed.email || parsed.sub || (payload && payload.email) || null,
+      exp: typeof parsed.exp === 'number' ? parsed.exp : null
+    };
+  } catch (e) {
+    return { token, email: payload?.email || null, exp: null };
+  }
+}
+
+async function upsertAutoAccounts(tokens) {
   await migrateLegacyIfNeeded();
-  const email = decodeJwtEmail(token);
+  const deduped = [...new Set((tokens || []).filter(t => typeof t === 'string' && t.trim()))];
+  const metas = deduped.map(getJwtTokenMeta);
   const s = await getSettings();
   const accounts = (s.accounts || []).map(sanitizeAccount);
 
-  // Match by email when we have one, otherwise by an existing auto-only account.
-  let idx = -1;
-  if (email) {
-    idx = accounts.findIndex(a => a.email && a.email === email);
-  }
-  if (idx === -1 && !email) {
-    // No email decoded — upsert into the first account that's auto-only and has no email.
-    idx = accounts.findIndex(a => !a.email && !a.manualToken);
+  for (const meta of metas) {
+    const email = meta.email;
+    let idx = -1;
+    if (email) {
+      idx = accounts.findIndex(a => a.email && a.email === email);
+    }
+    if (idx === -1 && !email) {
+      idx = accounts.findIndex(a => !a.email && !a.manualToken);
+    }
+
+    const labelFallback = email || 'Unity Account';
+    const existing = idx >= 0 ? accounts[idx] : null;
+    const label = existing
+      ? ((existing.label === existing.email || !existing.label || existing.label === 'Unity Account' || existing.label === 'Account 1')
+          ? labelFallback
+          : existing.label)
+      : labelFallback;
+
+    const updated = sanitizeAccount({
+      ...(existing || {
+        id: uuid(),
+        email: email || null,
+        label: labelFallback,
+        autoToken: '',
+        manualToken: '',
+        enabled: true
+      }),
+      autoToken: meta.token,
+      email: email || (existing?.email || null),
+      label
+    });
+
+    if (idx >= 0) {
+      accounts[idx] = updated;
+    } else {
+      accounts.push(updated);
+    }
   }
 
-  if (idx >= 0) {
-    accounts[idx] = sanitizeAccount({
-      ...accounts[idx],
-      autoToken: token,
-      email: email || accounts[idx].email,
-      // If the label was the legacy default, refresh it to the email
-      label: (accounts[idx].label === accounts[idx].email || !accounts[idx].label || accounts[idx].label === 'Unity Account' || accounts[idx].label === 'Account 1')
-        ? (email || accounts[idx].label)
-        : accounts[idx].label
-    });
-  } else {
-    accounts.push(sanitizeAccount({
-      id: uuid(),
-      label: email || 'Unity Account',
-      email,
-      autoToken: token,
-      manualToken: '',
-      enabled: true
-    }));
-  }
-  await setSettings({ accounts });
-  return { email, count: accounts.length };
+  const activeTokens = new Set(deduped);
+  const reconciled = accounts.map(a => {
+    if (a.autoToken && !activeTokens.has(a.autoToken) && !a.manualToken) {
+      return sanitizeAccount({ ...a, autoToken: '' });
+    }
+    return a;
+  });
+
+  await setSettings({ accounts: reconciled });
+  return { email: metas.map(m => m.email).find(Boolean) || null, count: reconciled.length };
+}
+
+async function upsertAutoAccount(token) {
+  return upsertAutoAccounts(token ? [token] : []);
 }
 
 async function clearAutoTokenIfPresent() {
@@ -791,8 +830,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
       switch (msg?.type) {
         case 'TOKEN_UPDATE': {
-          // From content script — auto-detected token on manage.unitynodes.io
-          if (msg.token) {
+          // From content script — auto-detected token(s) on manage.unitynodes.io
+          if (Array.isArray(msg.tokens)) {
+            if (msg.tokens.length > 0) {
+              const r = await upsertAutoAccounts(msg.tokens);
+              sendResponse({ ok: true, email: r.email, account_count: r.count });
+            } else {
+              await clearAutoTokenIfPresent();
+              sendResponse({ ok: true });
+            }
+          } else if (msg.token) {
             const r = await upsertAutoAccount(msg.token);
             sendResponse({ ok: true, email: r.email, account_count: r.count });
           } else {
