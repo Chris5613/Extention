@@ -45,7 +45,7 @@
       const multi = stored && stored[STORAGE_KEY_MULTI];
       const single = stored && stored[STORAGE_KEY_SINGLE];
 
-      if (multi && (multi.combined_mode || multi.combined_payload) && multi.combined_payload) {
+      if (multi && multi.combined_mode && multi.combined_payload) {
         // Combined mode: one push representing all accounts.
         postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH', payload: multi.combined_payload });
         postToPage({ source: EXT_SOURCE, type: 'EARNINGS_PUSH_MULTI', payload: multi });
