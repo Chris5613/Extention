@@ -322,6 +322,7 @@ function buildPayload(allocations, balanceMicros, email) {
     const d = (a.completedAt || '').split('T')[0];
     if (d) dateSet.add(d);
   });
+
   const sortedDates = [...dateSet].sort();
   const latestDate = sortedDates[sortedDates.length - 1] || todayLocal;
 
@@ -329,23 +330,62 @@ function buildPayload(allocations, balanceMicros, email) {
     const d = (a.completedAt || '').split('T')[0];
     return d === todayLocal || d === todayUtc;
   });
+
   let usedDate = todayLocal;
+
   if (!todayItems.length) {
-    todayItems = (allocations || []).filter(a => (a.completedAt || '').split('T')[0] === latestDate);
+    todayItems = (allocations || []).filter(
+      a => (a.completedAt || '').split('T')[0] === latestDate
+    );
     usedDate = latestDate;
   }
 
   const perDevice = {};
   todayItems.forEach(a => {
     const id = a.licenseId || 'unknown';
-    if (!perDevice[id]) perDevice[id] = { license_id: id, amount_usd: 0, allocation_count: 0 };
+    if (!perDevice[id]) {
+      perDevice[id] = {
+        license_id: id,
+        amount_usd: 0,
+        allocation_count: 0,
+      };
+    }
+
     perDevice[id].amount_usd += (a.amountMicros || 0) / 1e6;
     perDevice[id].allocation_count += 1;
   });
 
+  const dailyMap = {};
+
+  (allocations || []).forEach(a => {
+    const date = (a.completedAt || '').split('T')[0];
+    if (!date) return;
+
+    if (!dailyMap[date]) {
+      dailyMap[date] = {
+        date,
+        earnings_usd: 0,
+        allocation_count: 0,
+      };
+    }
+
+    dailyMap[date].earnings_usd += (a.amountMicros || 0) / 1e6;
+    dailyMap[date].allocation_count += 1;
+  });
+
+  const daily_earnings = Object.values(dailyMap)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(row => ({
+      ...row,
+      earnings_usd: Number(row.earnings_usd.toFixed(6)),
+    }));
+
   const totalMicros = todayItems.reduce((s, a) => s + (a.amountMicros || 0), 0);
   const totalUsd = totalMicros / 1e6;
-  const lifetimeMicros = (allocations || []).reduce((s, a) => s + (a.amountMicros || 0), 0);
+  const lifetimeMicros = (allocations || []).reduce(
+    (s, a) => s + (a.amountMicros || 0),
+    0
+  );
 
   return {
     source: 'chrome-extension',
@@ -358,13 +398,17 @@ function buildPayload(allocations, balanceMicros, email) {
     device_count: Object.keys(perDevice).length,
     balance_usd: balanceMicros != null ? Number((balanceMicros / 1e6).toFixed(6)) : null,
     lifetime_usd: Number((lifetimeMicros / 1e6).toFixed(6)),
-    devices: Object.values(perDevice).map(d => ({ ...d, amount_usd: Number(d.amount_usd.toFixed(6)) })),
+    daily_earnings,
+    devices: Object.values(perDevice).map(d => ({
+      ...d,
+      amount_usd: Number(d.amount_usd.toFixed(6)),
+    })),
     allocations: todayItems.map(a => ({
       id: a.id,
       license_id: a.licenseId,
       amount_usd: Number(((a.amountMicros || 0) / 1e6).toFixed(6)),
-      completed_at: a.completedAt
-    }))
+      completed_at: a.completedAt,
+    })),
   };
 }
 
@@ -387,14 +431,53 @@ function buildCombinedPayload(enabledAccounts, settings, triggeredBy, freshIds) 
   const allocationCount = perAccount.reduce((s, p) => s + (p.allocation_count || 0), 0);
   const deviceCount = perAccount.reduce((s, p) => s + (p.device_count || 0), 0);
 
-  // Flatten per-account devices + allocations so the combined payload still
-  // carries the raw breakdown (useful if the tracker supports it).
   const devices = [];
   const allocations = [];
+
   for (const p of perAccount) {
-    (p.devices || []).forEach(d => devices.push({ ...d, account_email: p.email || null }));
-    (p.allocations || []).forEach(a => allocations.push({ ...a, account_email: p.email || null }));
+    (p.devices || []).forEach(d =>
+      devices.push({
+        ...d,
+        account_email: p.email || null,
+        account_label: p.account_label || null,
+      })
+    );
+
+    (p.allocations || []).forEach(a =>
+      allocations.push({
+        ...a,
+        account_email: p.email || null,
+        account_label: p.account_label || null,
+      })
+    );
   }
+
+  const dailyMap = {};
+
+  for (const p of perAccount) {
+    (p.daily_earnings || []).forEach(row => {
+      const date = row.date;
+      if (!date) return;
+
+      if (!dailyMap[date]) {
+        dailyMap[date] = {
+          date,
+          earnings_usd: 0,
+          allocation_count: 0,
+        };
+      }
+
+      dailyMap[date].earnings_usd += Number(row.earnings_usd || 0);
+      dailyMap[date].allocation_count += Number(row.allocation_count || 0);
+    });
+  }
+
+  const daily_earnings = Object.values(dailyMap)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(row => ({
+      ...row,
+      earnings_usd: Number(row.earnings_usd.toFixed(6)),
+    }));
 
   const mostRecentDate = perAccount
     .map(p => p.date)
@@ -408,8 +491,6 @@ function buildCombinedPayload(enabledAccounts, settings, triggeredBy, freshIds) 
     combined: true,
     synced_at: new Date().toISOString(),
     triggered_by: triggeredBy,
-    // Tracker dedupes by email — use the user-configured combined id so all
-    // syncs land on the same row.
     email: settings.combinedEmail || 'combined@unity-network',
     account_label: settings.combinedLabel || 'Unity Network',
     date: mostRecentDate,
@@ -421,9 +502,10 @@ function buildCombinedPayload(enabledAccounts, settings, triggeredBy, freshIds) 
     account_count: enabledAccounts.length,
     ok_count: freshIds ? freshIds.size : 0,
     error_count: enabledAccounts.length - (freshIds ? freshIds.size : 0),
-    accounts: perAccount,  // per-account breakdown for consumers that want it
+    daily_earnings,
+    accounts: perAccount,
     devices,
-    allocations
+    allocations,
   };
 }
 
