@@ -661,22 +661,23 @@ async function performSync({ triggeredBy = 'manual', accountId = null } = {}) {
   const totalLifetime = latestPerAccount.reduce((sum, p) => sum + (p.lifetime_usd || 0), 0);
   const totalBalance = latestPerAccount.reduce((sum, p) => sum + (p.balance_usd || 0), 0);
 
-  const multiPayload = {
-    source: 'chrome-extension',
-    version: VERSION,
-    multi: true,
-    synced_at: new Date().toISOString(),
-    triggered_by: triggeredBy,
-    account_count: allEnabled.length,
-    ok_count: okCount,
-    error_count: errCount,
-    fresh_account_ids: [...freshIds],         // accounts whose data was refreshed this run
-    total_usd: Number(totalToday.toFixed(6)),
-    lifetime_usd: Number(totalLifetime.toFixed(6)),
-    balance_usd: Number(totalBalance.toFixed(6)),
-    accounts: latestPerAccount,                // latest known per-account snapshots (fresh + cached)
-    errors: results.filter(r => !r.ok).map(r => ({ account_id: r.accountId, error: r.error }))
-  };
+const multiPayload = {
+  source: 'chrome-extension',
+  version: VERSION,
+  multi: true,
+  synced_at: new Date().toISOString(),
+  triggered_by: triggeredBy,
+  account_count: allEnabled.length,
+  ok_count: okCount,
+  error_count: errCount,
+  fresh_account_ids: [...freshIds],
+  total_usd: Number(totalToday.toFixed(6)),
+  lifetime_usd: Number(totalLifetime.toFixed(6)),
+  balance_usd: Number(totalBalance.toFixed(6)),
+  daily_earnings: combinedPayload?.daily_earnings || [],
+  accounts: latestPerAccount,
+  errors: results.filter(r => !r.ok).map(r => ({ account_id: r.accountId, error: r.error }))
+};
 
   // Build the COMBINED ("Unity Network") payload \u2014 a single virtual account
   // representing all enabled accounts summed. When combinedMode is on, this is
