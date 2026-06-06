@@ -4,22 +4,22 @@
   "version": "1.2.2",
   "description": "Fetches your Unity Nodes daily earnings (multi-account) and forwards them to your Net Worth tracker via in-page messaging.",
   "permissions": ["storage", "alarms", "notifications", "tabs"],
-  "host_permissions": [
-    "https://manage.unitynodes.io/*",
-    "https://api.unityedge.io/*",
-    "https://nam-qyn8.onrender.com/*",
-    "http://*/*",
-    "https://*/*"
-  ],
+"host_permissions": [
+  "https://manage.unetwork.io/*",
+  "https://api.unityedge.io/*",
+  "https://nam-qyn8.onrender.com/*",
+  "http://*/*",
+  "https://*/*"
+],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
-    {
-      "matches": ["https://manage.unitynodes.io/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    },
+  {
+    "matches": ["https://manage.unetwork.io/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  },
     {
       "matches": ["https://nam-qyn8.onrender.com/*"],
       "js": ["content-app.js"],

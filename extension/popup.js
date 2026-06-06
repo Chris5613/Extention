@@ -261,7 +261,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const openUnity = (e) => {
     e.preventDefault();
-    chrome.tabs.create({ url: 'https://manage.unitynodes.io/' });
+    chrome.tabs.create({ url: 'https://manage.unetwork.io/' });
   };
   $('open-unity').addEventListener('click', openUnity);
   $('open-unity-empty')?.addEventListener('click', openUnity);
